@@ -3,5 +3,5 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
-# "::" binds IPv6 + IPv4 - required for Railway private networking
-CMD ["uvicorn", "app:app", "--host", "::", "--port", "8000"]
+# "" binds all addresses (IPv4 + IPv6) - "::" alone is IPv6-only under uvicorn
+CMD ["uvicorn", "app:app", "--host", "", "--port", "8000"]
