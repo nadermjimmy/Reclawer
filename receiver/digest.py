@@ -25,10 +25,13 @@ for _id, gname, sender, ts, text in rows:
 transcript = "\n\n".join(f"### {g}\n" + "\n".join(lines) for g, lines in by_group.items())
 resp = anthropic.Anthropic().messages.create(
     model=os.getenv("CLAUDE_MODEL", "claude-sonnet-5-5"),
-    max_tokens=2000,
+    max_tokens=16000,
     system=SYSTEM,
     messages=[{"role": "user", "content": f"Messages since the last digest:\n\n{transcript}"}],
 )
-print(resp.content[0].text)
+text = "".join(b.text for b in resp.content if b.type == "text")
+if not text:
+    raise SystemExit(f"No summary returned (stop_reason={resp.stop_reason}); messages left unprocessed.")
+print(text)
 c.executemany("UPDATE messages SET processed=1 WHERE id=?", [(r[0],) for r in rows])
 c.commit()
