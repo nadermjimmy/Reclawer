@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% from "macros.html" import fact_items %}
+{% block body %}
+{% if f %}
+<h1>{{ f.fact_type|label|capitalize }} statement</h1>
+<p>Project as written: “{{ f.raw_project_label or '—' }}”. It didn't match exactly one project. If it refers to a known
+project, add that wording as the project name on the matching table's mapping, or reject the statement.</p>
+{{ fact_items([f], request.url.path) }}
+{% else %}<p>Not found.</p>{% endif %}
+{% endblock %}

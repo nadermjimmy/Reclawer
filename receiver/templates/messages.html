@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block body %}
+<h1>{{ name }}</h1>
+<form class="filters"><input name="q" value="{{ q }}" placeholder="Search text, file or sender"><button>Search</button></form>
+<div class="chat">
+{% for m in msgs %}
+<div class="msg" id="{{ m.wa_id }}"><span class="muted">{{ m.ts|ts }} · {{ m.sender_name or 'unknown' }}</span>
+{% if m.text %}<div class="text">{{ m.text }}</div>{% endif %}
+{% if m.file_name or m.has_media %}<div class="file">📎 {{ m.file_name or m.message_type|label }}
+{% if files.get(m.wa_id) %} — <a href="/sources/file/{{ files[m.wa_id] }}">open</a>{% endif %}</div>{% endif %}
+</div>
+{% else %}<p class="muted">No messages.</p>{% endfor %}
+</div>
+{% if msgs|length == 200 %}<p><a href="?q={{ q }}&before={{ msgs[-1].ts }}">Older messages →</a></p>{% endif %}
+{% endblock %}

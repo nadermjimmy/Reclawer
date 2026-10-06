@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block body %}
+{% if job %}
+<h1>{{ job.name }} <span class="st-{{ job.status }}">{{ job.status }}</span></h1>
+{% if job.status == 'running' %}<meta http-equiv="refresh" content="4">{% endif %}
+<pre class="log">{{ job.log }}</pre>
+<p><a href="/">Back to pipeline</a></p>
+{% else %}<p>Job not found.</p>{% endif %}
+{% endblock %}

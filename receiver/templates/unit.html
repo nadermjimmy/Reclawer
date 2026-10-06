@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% from "macros.html" import unit_status, areas %}
+{% block body %}
+{% if u %}
+<h1>{{ u.unit_code }} <span class="muted">· <a href="/projects/{{ u.slug }}">{{ u.project }}</a>{% if u.phase_key %} · {{ u.phase_key }}{% endif %}</span></h1>
+<h2>Every observation</h2>
+<table>
+<tr><th>Sheet date</th><th>Listed price</th><th>Area</th><th>Unit status</th><th>Type</th><th>Source</th></tr>
+{% for s in snaps %}
+<tr><td>{{ s.snapshot_ts|ts }}</td><td>{{ s.currency ~ ' ' if s.currency }}{{ s.price_raw or '—' }}</td><td>{{ areas(s) }}</td>
+<td>{{ unit_status(s) }}</td><td>{{ s.unit_type_raw or '—' }}</td>
+<td><a href="/sources/row/{{ s.source_row_id }}">{{ s.file_name }} · {{ s.sheet }} row {{ s.row_number }}</a>
+{% if s.ppsf_inputs %}<details class="small"><summary>price per sq ft calculation</summary><pre>{{ s.ppsf_inputs }}</pre></details>{% endif %}</td></tr>
+{% endfor %}
+</table>
+{% else %}<p>Unit not found.</p>{% endif %}
+{% endblock %}

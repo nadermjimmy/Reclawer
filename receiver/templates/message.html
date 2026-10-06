@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block body %}
+{% if m %}
+<h1>Message <span class="muted">· {{ m.gname or m.group_jid }}</span></h1>
+<div class="chat">
+{% for n in near %}<div class="msg {% if n.wa_id == m.wa_id %}hl{% endif %}"><span class="muted">{{ n.ts|ts }} · {{ n.sender_name or 'unknown' }}</span>
+{% if n.text %}<div class="text">{{ n.text }}</div>{% endif %}
+{% if n.file_name or n.has_media %}<div class="file">📎 {{ n.file_name or n.message_type|label }}{% if files.get(n.wa_id) %} — <a href="/sources/file/{{ files[n.wa_id] }}">open</a>{% endif %}</div>{% endif %}</div>{% endfor %}
+</div>
+<p class="small muted">Showing 30 minutes either side. <a href="/groups/{{ m.group_jid }}">Whole group</a></p>
+{% else %}<p>Message not found.</p>{% endif %}
+{% endblock %}

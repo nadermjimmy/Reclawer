@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block body %}
+<h1>Review queue</h1>
+<div class="cards">
+  <a class="card" href="/review/mappings"><b>{{ pending_maps }}</b> project mappings waiting for approval</a>
+  <a class="card" href="/review/mappings?state=unmapped">Tables not mapped yet</a>
+  <a class="card" href="/review/images"><b>{{ pending_imgs }}</b> images to review</a>
+</div>
+<p class="muted">Items below are recalculated each time you run “Build inventory”. Nothing is dropped:
+queued rows still count in the reconciliation.</p>
+<div class="filters">
+<a href="/review" class="{% if not kind %}active{% endif %}">All</a>
+{% for k in kinds %}<a href="?kind={{ k.issue_type }}" class="{% if kind == k.issue_type %}active{% endif %} sev-{{ k.severity }}">{{ k.issue_type|label }} ({{ k.n }})</a>{% endfor %}
+</div>
+<table>
+<tr><th>Severity</th><th>Type</th><th>What</th><th></th></tr>
+{% for i in issues %}
+{% set d = i.detail_json|fromjson %}
+<tr><td class="sev-{{ i.severity }}">{{ i.severity }}</td><td>{{ i.issue_type|label }}</td>
+<td>{{ i.reason }}{% if d.sheet %} <span class="muted small">— {{ d.file or '' }} / {{ d.sheet }}{% if d.rows %} ({{ d.rows }} rows){% endif %}</span>{% endif %}</td>
+<td>{% if i.ref_kind == 'context' %}<a href="/review/context?key={{ i.ref_id|urlencode }}">resolve</a>
+{% elif i.ref_kind == 'row' %}<a href="/sources/row/{{ i.ref_id }}">row</a>
+{% elif i.ref_kind == 'fact' %}<a href="/review/fact/{{ i.ref_id }}">fact</a>
+{% elif i.ref_kind == 'file' %}<a href="/sources/file/{{ i.ref_id }}">file</a>
+{% elif i.ref_kind == 'media' %}<a href="/sources">sources</a>{% endif %}</td></tr>
+{% else %}<tr><td colspan="4" class="muted">Nothing in the queue.</td></tr>{% endfor %}
+</table>
+{% endblock %}

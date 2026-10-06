@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block body %}
+<h1>Sources</h1>
+<table>
+<tr><th>File</th><th>Type</th><th>Posted</th><th>Read</th><th>Rows/pages</th><th>SHA-256</th></tr>
+{% for f in files %}
+<tr><td><a href="/sources/file/{{ f.id }}">{{ f.file_name or '(no name)' }}</a></td><td>{{ f.kind }}</td><td>{{ f.posts }}×</td>
+<td class="st-{{ f.parse_status }}">{{ f.parse_status }}{% if f.parse_error %}<div class="small">{{ f.parse_error }}</div>{% endif %}</td>
+<td>{{ f.nrows }}</td><td class="small muted">{{ f.sha256[:12] }}…</td></tr>
+{% else %}<tr><td colspan="6" class="muted">No files downloaded yet.</td></tr>{% endfor %}
+</table>
+<h2>Attachments that couldn't be downloaded ({{ failed|length }})</h2>
+<p class="muted small">WhatsApp only keeps media for a limited time. These messages are kept; their files are missing.</p>
+<table>
+{% for f in failed %}<tr><td>{{ f.ts|ts }}</td><td><a href="/sources/message/{{ f.wa_id }}">{{ f.file_name or 'attachment' }}</a></td><td class="small muted">{{ f.error }}</td></tr>{% endfor %}
+</table>
+{% endblock %}

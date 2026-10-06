@@ -1,6 +1,8 @@
-"""Receives Evolution API webhooks, keeps group messages, drops noise."""
+"""Receives Evolution API webhooks, keeps group messages, drops noise. Also serves the inventory web app."""
 import os, re, sqlite3, time
 from fastapi import FastAPI, Request, HTTPException
+from fastapi.staticfiles import StaticFiles
+import db as store, history, web
 
 DB = os.getenv("DB_PATH", "/data/messages.db")
 TOKEN = os.environ["WEBHOOK_TOKEN"]
@@ -26,7 +28,11 @@ def extract_text(msg: dict) -> str:
             or msg.get("documentMessage", {}).get("fileName")
             or "")
 
+store.init()
 app = FastAPI()
+app.middleware("http")(web.auth_middleware)
+app.mount("/static", StaticFiles(directory=os.path.join(os.path.dirname(__file__), "static")), name="static")
+app.include_router(web.router)
 
 @app.post("/webhook/{token}")
 async def webhook(token: str, request: Request):
@@ -53,6 +59,8 @@ async def webhook(token: str, request: Request):
     jid = key.get("remoteJid", "")
     if not jid.endswith("@g.us"):
         return {"ignored": "not a group"}
+    with store.connect() as c:  # full copy for the inventory (attachments included, no noise filter)
+        history.store_message(c, history.parse_record(d, "webhook"))
     if ALLOWED and jid not in ALLOWED:
         return {"ignored": "group not allowed"}
 

@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block body %}
+<h1>Groups</h1>
+<p class="muted">Tick the UAE inventory group(s). Only ticked groups feed the inventory; every group's messages
+stay browsable.</p>
+<form method="post" action="/groups">
+<table>
+<tr><th>In scope</th><th>Group</th><th>Messages</th><th>Oldest message</th></tr>
+{% for g in groups %}
+<tr><td><input type="checkbox" name="scope" value="{{ g.jid }}" {% if g.in_scope %}checked{% endif %}></td>
+<td><a href="/groups/{{ g.jid }}">{{ g.name or g.jid }}</a></td><td>{{ g.n }}</td><td>{{ g.first_ts|ts }}</td></tr>
+{% else %}<tr><td colspan="4" class="muted">No groups yet — run step 1 on the pipeline page.</td></tr>{% endfor %}
+</table>
+<button>Save</button>
+</form>
+{% endblock %}

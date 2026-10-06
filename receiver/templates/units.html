@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% from "macros.html" import unit_table %}
+{% block body %}
+<h1>Units</h1>
+<form class="filters">
+<input name="q" value="{{ q }}" placeholder="Unit, project, phase or type">
+<select name="status"><option value="">Any status</option>
+{% for s in ['available','sold','reserved','under_process','announced','unknown'] %}<option value="{{ s }}" {% if s == status %}selected{% endif %}>{{ s|label }}</option>{% endfor %}
+</select>
+<input name="max_price" value="{{ max_price }}" placeholder="Max listed price">
+<button>Filter</button></form>
+<p class="muted">{{ total }} units{% if total > 2000 %} (showing 2,000){% endif %}.</p>
+{{ unit_table(units, True) }}
+{% endblock %}

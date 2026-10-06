@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% from "macros.html" import unit_table, fact_state, fact_items %}
+{% block title %}{{ p.name }}{% endblock %}
+{% block body %}
+<h1>{{ p.name }}</h1>
+<p class="muted">Developer: {{ p.developer or 'Not supplied' }} · {{ phases|length }} phase(s)/building(s) ·
+{{ units|length }} units ({{ history_n }} observations across all availability sheets)</p>
+
+<div class="media">
+{% for i in images %}<figure><img src="/sources/file/{{ i.fid }}" alt="{{ i.classification|label }}">
+<figcaption>{{ i.classification|label }}{% if i.phase_label %} · {{ i.phase_label }}{% endif %}</figcaption></figure>
+{% else %}<div class="placeholder">Image withheld / not source-verified</div>{% endfor %}
+</div>
+
+<h2>Project information</h2>
+<table class="facts-table">
+{% for t, s in key_facts %}
+<tr><th>{{ t|label|capitalize }}</th>
+<td>{{ fact_state(s.state) }} {% if s.value and s.state != 'conflict' %}<b>{{ s.value }}</b>{% endif %}
+{% if s['items'] %}<details {% if s.state == 'conflict' %}open{% endif %}><summary class="small">{{ s['items']|length }} statement(s)</summary>
+{{ fact_items(s['items'], request.url.path) }}</details>{% endif %}</td></tr>
+{% endfor %}
+</table>
+
+<h2>Phases / buildings</h2>
+{% if phases %}<ul>{% for ph in phases %}<li>{{ ph.display_label }}</li>{% endfor %}</ul>{% else %}<p class="muted">No phase labels in the sources.</p>{% endif %}
+<h3>Phase status statements</h3>
+{% if phase_facts %}{{ fact_items(phase_facts, request.url.path) }}{% else %}<p class="muted">No phase status stated in the group. Unit status below is per unit and doesn't imply a phase status.</p>{% endif %}
+{% if other %}<h3>Other statements</h3>{{ fact_items(other, request.url.path) }}{% endif %}
+
+<h2>Units</h2>
+<p class="small muted">Latest availability observation per unit. Listed price and area are exactly as in the source sheet.</p>
+{{ unit_table(units) }}
+{% endblock %}

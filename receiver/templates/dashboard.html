@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block body %}
+<h1>Pipeline</h1>
+<div class="stats">
+  <div><b>{{ counts.groups }}</b>groups</div><div><b>{{ counts.in_scope }}</b>in scope</div>
+  <div><b>{{ counts.messages }}</b>messages</div><div><b>{{ counts.files }}</b>files</div>
+  <div><b>{{ counts.projects }}</b>projects</div><div><b>{{ counts.units }}</b>units</div>
+</div>
+{% if request.query_params.get('busy') %}<p class="err">Another step is still running. Wait for it to finish.</p>{% endif %}
+<p class="muted">Run the steps in order the first time. After that, re-run any step whenever new messages arrive;
+each step only processes what is new, and step 8 rebuilds the inventory from scratch.</p>
+<table class="steps">
+{% for key, title, desc, fn in steps %}
+<tr><td><b>{{ title }}</b><br><span class="muted">{{ desc }}</span>
+{% if key == 'sync_groups' %}<br><a href="/groups">Then choose the UAE group(s) on the Groups page.</a>{% endif %}</td>
+<td class="right"><form method="post" action="/jobs/{{ key }}">
+  {% if key in ('map_projects','parse_files','download_media') %}
+  <label class="small"><input type="checkbox" name="redo" value="1">
+    {% if key == 'map_projects' %}re-ask unreviewed{% elif key == 'parse_files' %}re-read all{% else %}retry failed{% endif %}</label>
+  {% endif %}
+  <button {% if job_running %}disabled{% endif %}>Run</button></form></td></tr>
+{% endfor %}
+</table>
+<h2>Recent runs</h2>
+<table>
+<tr><th>Step</th><th>Status</th><th>Started</th><th></th></tr>
+{% for j in recent %}
+<tr><td>{{ j.name }}</td><td class="st-{{ j.status }}">{{ j.status }}</td><td>{{ j.started_at|ts }}</td>
+<td><a href="/jobs/{{ j.id }}">log</a></td></tr>
+{% else %}<tr><td colspan="4" class="muted">Nothing run yet.</td></tr>{% endfor %}
+</table>
+{% endblock %}

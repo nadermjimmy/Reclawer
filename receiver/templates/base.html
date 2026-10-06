@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}Byit Inventory{% endblock %}</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="top">
+  <a class="brand" href="/">Byit Inventory</a>
+  <nav>
+    <a href="/projects">Projects</a>
+    <a href="/units">Units</a>
+    <a href="/review">Review{% if open_issues %} <span class="badge">{{ open_issues }}</span>{% endif %}</a>
+    <a href="/groups">Groups</a>
+    <a href="/sources">Sources</a>
+    <a href="/reconciliation">Reconciliation</a>
+    <a href="/logout" class="muted">Log out</a>
+  </nav>
+</header>
+{% if job_running %}<div class="banner">A pipeline step is running — <a href="/">see progress</a>.</div>{% endif %}
+<main>{% block body %}{% endblock %}</main>
+</body>
+</html>

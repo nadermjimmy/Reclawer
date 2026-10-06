@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block body %}
+{% if r %}
+<h1>{{ r.file_name }} <span class="muted">· {{ r.sheet }} · {% if r.kind == 'pdf_page' %}page{% else %}row{% endif %} {{ r.row_number }}</span></h1>
+<p><a href="/sources/file/{{ r.file_id }}">Download original</a>{% if r.section_label %} · section “{{ r.section_label }}”{% endif %}{% if r.hidden %} · <b>hidden in workbook</b>{% endif %}</p>
+{% if raw.text is defined %}<pre class="log">{{ raw.text }}</pre>
+{% else %}
+<table><tr><th>Cell</th><th>Header</th><th>Exact value</th><th>Format</th></tr>
+{% for cell in raw.cells %}{% if cell.v %}<tr><td>{{ cell.c }}{{ r.row_number }}</td>
+<td>{% if header and loop.index0 < header|length %}{{ header[loop.index0].v }}{% endif %}</td><td>{{ cell.v }}</td><td class="small muted">{{ cell.fmt }}</td></tr>{% endif %}{% endfor %}
+</table>{% endif %}
+{% else %}<p>Not found.</p>{% endif %}
+{% endblock %}

@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block body %}
+<h1>Reconciliation</h1>
+<table class="facts-table">
+<tr><th>In-scope files</th><td>{{ rep.in_scope_files }}</td></tr>
+<tr><th>Files by read status</th><td>{% for k, v in rep.files_by_status.items() %}{{ k }}: {{ v }}{% if not loop.last %}, {% endif %}{% endfor %}</td></tr>
+<tr><th>Attachments not downloadable</th><td>{{ rep.attachments_unavailable }}</td></tr>
+<tr><th>Unit rows in sources</th><td><b>{{ rep.unit_rows_in_sources }}</b></td></tr>
+<tr><th>— mapped to a project</th><td>{{ rep.mapped }}</td></tr>
+<tr><th>— queued for review</th><td>{{ rep.queued }}</td></tr>
+<tr><th>— excluded (outside UAE)</th><td>{{ rep.excluded_by_scope }}</td></tr>
+<tr><th>Adds up</th><td class="{{ 'ok' if rep.adds_up else 'err' }}">{{ 'Yes' if rep.adds_up else 'NO — rebuild the inventory' }}</td></tr>
+<tr><th>Distinct units (mapped)</th><td>{{ rep.distinct_units }}</td></tr>
+<tr><th>Projects</th><td>{{ rep.projects }}</td></tr>
+<tr><th>Lowest / highest listed price</th><td>{{ rep.min_price|money }} / {{ rep.max_price|money }}</td></tr>
+<tr><th>Rows under 1,000,000</th><td>{{ rep.rows_under_1m }} (all kept)</td></tr>
+<tr><th>Prices that aren't plain numbers</th><td>{{ rep.prices_not_plain_numbers }} (kept as written)</td></tr>
+</table>
+<h2>By file</h2>
+<table><tr><th>File</th><th>State</th><th>Rows</th></tr>
+{% for f in per_file %}<tr><td><a href="/sources/file/{{ f.file_id }}">{{ f.file_name }}</a></td><td>{{ f.mapping_state }}</td><td>{{ f.n }}</td></tr>{% endfor %}
+</table>
+{% endblock %}

@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block body %}
+<h1>Images</h1>
+<div class="filters">{% for s, n in [('proposed','Proposed (high confidence)'),('withheld','Withheld'),('approved','Approved'),('excluded','Excluded')] %}
+<a href="?state={{ s }}" class="{% if s == state %}active{% endif %}">{{ n }}</a>{% endfor %}</div>
+<p class="muted">Only approved images appear on project pages. Everything else shows “Image withheld / not source-verified”.</p>
+<div class="grid">
+{% for i in imgs %}
+<div class="card"><img src="/sources/file/{{ i.file_id }}" alt="">
+<p><b>{{ i.classification|label }}</b> {% if i.project_name %}· {{ i.project_name }}{% endif %} <span class="small">({{ i.confidence }})</span></p>
+<p class="small muted">{{ i.rationale }}{% if i.excluded_reason %} — {{ i.excluded_reason }}{% endif %}</p>
+<form method="post" action="/review/images" class="stack"><input type="hidden" name="file_id" value="{{ i.file_id }}">
+<input type="hidden" name="back" value="/review/images?state={{ state }}">
+<input name="project_name" value="{{ i.project_name or '' }}" placeholder="Project">
+<span><button name="action" value="approve">Approve</button><button name="action" value="withhold" class="secondary">Withhold</button>
+<button name="action" value="exclude" class="secondary">Exclude</button></span></form></div>
+{% else %}<p class="muted">Nothing here.</p>{% endfor %}
+</div>
+{% endblock %}

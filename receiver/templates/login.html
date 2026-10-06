@@ -1,0 +1,11 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sign in</title><link rel="stylesheet" href="/static/style.css"></head>
+<body class="center">
+<form method="post" action="/login" class="card narrow">
+  <h1>Byit Inventory</h1>
+  {% if error %}<p class="err">Wrong password.</p>{% endif %}
+  <label>Password <input type="password" name="password" autofocus required></label>
+  <button>Sign in</button>
+</form>
+</body></html>

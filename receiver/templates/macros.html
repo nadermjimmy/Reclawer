@@ -1,0 +1,53 @@
+{% macro unit_status(s) -%}
+{% set names = {'available':'Available','sold':'Sold','reserved':'Reserved','under_process':'Under process','announced':'Announced'} %}
+{% if s.unit_status in names %}<span class="pill st-{{ s.unit_status }}">{{ names[s.unit_status] }}</span>
+{% elif s.status_raw %}<span class="pill st-unknown" title="Source text not recognised">“{{ s.status_raw }}”</span>
+{% else %}<span class="pill st-unknown">Status not supplied</span>{% endif %}
+{%- endmacro %}
+
+{% macro fact_state(state) -%}
+{% set names = {'not_supplied':'Not supplied','needs_validation':'Needs validation','source_stated_unverified':'Stated in group, unverified','verified_from_source':'Verified from source','conflict':'Conflict','rejected':'Rejected'} %}
+<span class="pill fs-{{ state }}">{{ names.get(state, state) }}</span>
+{%- endmacro %}
+
+{% macro areas(s) -%}
+{% for a in s.areas_json|fromjson %}<div>{{ a.label }}: {{ a.raw }}{% if a.unit == 'sq_ft' %} sq ft{% elif a.unit == 'sq_m' %} sq m{% endif %}</div>
+{% else %}<span class="muted">—</span>{% endfor %}
+{%- endmacro %}
+
+{% macro unit_table(units, show_project=False) -%}
+<table class="units">
+<tr>{% if show_project %}<th>Project</th>{% endif %}<th>Phase / building</th><th>Unit</th><th>Type</th><th>Floor</th><th>View</th>
+<th>Listed price</th><th>Area</th><th title="Calculated: listed price ÷ area in sq ft">Price per sq ft<br><span class="small muted">calculated</span></th>
+<th>Unit status</th><th>Source</th></tr>
+{% for s in units %}
+<tr>{% if show_project %}<td><a href="/projects/{{ s.slug }}">{{ s.project }}</a></td>{% endif %}
+<td>{{ s.phase_key or '—' }}</td>
+<td><a href="/units/{{ s.unit_id }}">{{ s.unit_code }}</a>{% if s.restriction_raw %}<div class="small warn">{{ s.restriction_raw }}</div>{% endif %}</td>
+<td>{{ s.unit_type_raw or '—' }}</td><td>{{ s.floor_raw or '—' }}</td><td>{{ s.view_raw or '—' }}</td>
+<td class="num">{% if s.price_raw %}{{ s.currency ~ ' ' if s.currency }}{{ s.price_raw }}{% else %}<span class="muted">Not supplied</span>{% endif %}</td>
+<td>{{ areas(s) }}</td>
+<td class="num">{% if s.price_per_sqft %}{{ s.price_per_sqft|money }}{% else %}<span class="muted" title="Needs a plain listed price, a currency and an area in sq ft or sq m">—</span>{% endif %}</td>
+<td>{{ unit_status(s) }}</td>
+<td><a class="small" href="/sources/row/{{ s.source_row_id }}">row</a> <span class="small muted">{{ s.snapshot_ts|ts }}</span></td></tr>
+{% else %}<tr><td colspan="11" class="muted">No units.</td></tr>{% endfor %}
+</table>
+{%- endmacro %}
+
+{% macro fact_items(items, back) -%}
+<ul class="facts">
+{% for f in items %}
+<li class="{% if f.validation_status == 'rejected' %}struck{% endif %}">
+  <b>{{ f.parsed_value or f.raw_value }}</b>{% if f.phase_label %} <span class="muted">({{ f.phase_label }})</span>{% endif %}
+  <span class="small">“{{ f.raw_value }}” —
+  {% if f.source_kind == 'message' %}<a href="/sources/message/{{ f.source_ref }}">message</a>{% else %}<a href="/sources/row/{{ f.source_ref }}">document page</a>{% endif %}
+  {{ f.observed_ts|ts }}{% if f.updates_previous %} · update{% endif %}</span> {{ fact_state(f.validation_status) }}
+  <form method="post" action="/facts/{{ f.id }}" class="inline">
+    <input type="hidden" name="back" value="{{ back }}">
+    <button name="status" value="verified_from_source" class="small">Verified</button>
+    <button name="status" value="needs_validation" class="small">Needs validation</button>
+    <button name="status" value="rejected" class="small">Reject</button>
+  </form>
+</li>{% endfor %}
+</ul>
+{%- endmacro %}

@@ -1,0 +1,37 @@
+{
+  "_comment": "Owner corrections applied on every inventory build. Edit and rebuild; no code change needed. 'locations' are labels that must never become projects (add more as the owner identifies them).",
+  "not_project_names": [
+    "Dubai Hills",
+    "No Flip or Change the Unit"
+  ],
+  "not_project_patterns": [
+    "^no\\s*flip",
+    "change\\s+the\\s+unit",
+    "^(tower|phase|block|building|bldg|cluster|wing)\\s*[-#:]?\\s*\\w{0,3}$",
+    "^(sold\\s*out|available|availability|inventory|price\\s*list|offer|launch)\\b"
+  ],
+  "locations": [
+    "Dubai Hills",
+    "Dubai Hills Estate"
+  ],
+  "one_parent_groups": [
+    {
+      "pattern": "brabus",
+      "note": "Brabus is one parent project; its towers are phases/buildings under it."
+    },
+    {
+      "pattern": "verdana",
+      "note": "Verdana is one parent project with six phases."
+    }
+  ],
+  "phase_limits": {
+    "verdana": 6
+  },
+  "image_blocklist_terms": [
+    "g-class",
+    "g class",
+    "mercedes",
+    "g63",
+    "g 63"
+  ]
+}

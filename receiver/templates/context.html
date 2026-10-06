@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block body %}
+{% if x %}
+<h1>{{ x.file_name }} <span class="muted">· {{ x.sheet }}</span></h1>
+<p>Section: “{{ x.section_label or '—' }}” · project cell: “{{ x.raw_project or '—' }}” · phase cell: “{{ x.raw_phase or '—' }}” · {{ x.row_count }} unit rows
+· <a href="/sources/file/{{ x.file_id }}">download file</a></p>
+{% if m %}<p>Current: <b>{{ m.decision|label }}</b> {{ m.project_name }}{% if m.phase_label %} › {{ m.phase_label }}{% endif %}
+({{ m.confidence }}, UAE {{ m.is_uae }}, {{ m.source }}, {{ m.review_state }}) — {{ m.rationale }}</p>{% endif %}
+<form method="post" action="/review/mappings" class="row">
+<input type="hidden" name="key" value="{{ x.key }}"><input type="hidden" name="back" value="{{ request.url.path }}?key={{ x.key|urlencode }}">
+<input name="project_name" value="{{ m.project_name if m else '' }}" placeholder="Parent project">
+<input name="phase_label" value="{{ m.phase_label if m else '' }}" placeholder="Phase / building">
+<input name="developer" value="{{ m.developer if m else '' }}" placeholder="Developer">
+<button name="action" value="approve">Approve</button><button name="action" value="reject" class="secondary">Can't tell</button>
+<button name="action" value="exclude" class="secondary">Not UAE</button></form>
+
+<h2>WhatsApp context</h2>
+{% for occ in evidence.messages %}<div class="chat">
+{% for n in occ.messages %}<div class="msg {% if n.id == occ.file_message %}hl{% endif %}"><span class="muted">{{ n.time|ts }} · {{ n.from or 'unknown' }}</span>
+<div class="text">{{ n.text }}</div>{% if n.file %}<div class="file">📎 {{ n.file }}</div>{% endif %}</div>{% endfor %}
+</div>{% else %}<p class="muted">No messages found for this file.</p>{% endfor %}
+
+{% if layout %}
+<h2>Column layout</h2>
+<p class="muted small">Detected from header row {{ layout.header_row }} ({{ layout.source }}). Fix a column's meaning here, then rebuild.</p>
+<form method="post" action="/layout"><input type="hidden" name="file_id" value="{{ layout.file_id }}"><input type="hidden" name="sheet" value="{{ layout.sheet }}">
+<input type="hidden" name="back" value="{{ request.url.path }}?key={{ x.key|urlencode }}">
+<table><tr><th>Header</th><th>Meaning</th><th>Area unit</th><th>Currency</th></tr>
+{% for col in layout.columns_json|fromjson %}
+<tr><td>{{ col.header }}</td><td><select name="role_{{ col.index }}">
+{% for r in ['', 'unit_code','unit_type','floor','view','price','area','status','project','phase','payment_plan','handover','service_charge','source_price_per_area','notes','extra'] %}
+<option value="{{ r }}" {% if (col.role or '') == r %}selected{% endif %}>{{ r|label or 'ignore' }}</option>{% endfor %}</select></td>
+<td><select name="unit_{{ col.index }}">{% for u, n in [('', 'not stated'), ('sq_ft','sq ft'), ('sq_m','sq m')] %}<option value="{{ u }}" {% if col.area_unit == u %}selected{% endif %}>{{ n }}</option>{% endfor %}</select></td>
+<td><select name="cur_{{ col.index }}">{% for u in ['', 'AED'] %}<option value="{{ u }}" {% if col.currency == u %}selected{% endif %}>{{ u or 'not stated' }}</option>{% endfor %}</select></td></tr>
+{% endfor %}</table><button>Save layout</button></form>
+{% endif %}
+
+<h2>Rows (first 50)</h2>
+<table class="small">
+{% for r, v in sample %}<tr><td><a href="/sources/row/{{ r.id }}">{{ r.row_number }}</a></td>
+{% for role, items in v.items() %}{% for it in items %}<td title="{{ it[1] }}">{{ it[2] }}</td>{% endfor %}{% endfor %}</tr>{% endfor %}
+</table>
+{% else %}<p>Not found.</p>{% endif %}
+{% endblock %}
