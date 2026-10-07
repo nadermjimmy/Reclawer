@@ -69,7 +69,7 @@ class FakeEvolution:
     def find_messages(self, jid, page, page_size=100):
         return HISTORY.get(jid, []), 1
 
-    def media_base64(self, wa_id):
+    def media_base64(self, wa_id, jid=None):
         if wa_id == "gone":
             raise RuntimeError("404 media expired")
         name, data = FILES[wa_id]

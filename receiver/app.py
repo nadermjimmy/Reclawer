@@ -2,7 +2,7 @@
 import os, re, sqlite3, time
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.staticfiles import StaticFiles
-import db as store, evolution, history, web
+import db as store, evolution, feed, history, web
 
 DB = os.getenv("DB_PATH", "/data/messages.db")
 TOKEN = os.environ["WEBHOOK_TOKEN"]
@@ -33,6 +33,7 @@ app = FastAPI()
 app.middleware("http")(web.auth_middleware)
 app.mount("/static", StaticFiles(directory=os.path.join(os.path.dirname(__file__), "static")), name="static")
 app.include_router(web.router)
+app.include_router(feed.router)
 
 @app.post("/webhook/{token}")
 async def webhook(token: str, request: Request):

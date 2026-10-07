@@ -99,7 +99,7 @@ def sync_groups(log):
                 n_private += 1
             name = ch.get("name") or ch.get("subject") or ch.get("pushName")
             c.execute("INSERT INTO groups VALUES(?,?) ON CONFLICT(jid) DO UPDATE SET "
-                      "name=COALESCE(excluded.name, groups.name)", (jid, chat_name(jid, name)))
+                      "name=COALESCE(?, groups.name)", (jid, chat_name(jid, name), name or None))
             c.execute("INSERT OR IGNORE INTO group_scope(jid,in_scope) VALUES(?,0)", (jid,))
         for g in groups:  # live subjects win for groups
             if g.get("id"):
@@ -170,6 +170,34 @@ def save_file(c, wa_id, content, file_name, mimetype):
     return file_id
 
 
+def fetch_media(wa_id):
+    """Download one message's image/document now. Returns the source_files id; records failures."""
+    with db.connect() as c:
+        hit = c.execute("SELECT file_id FROM file_occurrences WHERE wa_id=?", (wa_id,)).fetchone()
+        if hit:
+            return hit[0]
+        m = c.execute("SELECT * FROM source_messages WHERE wa_id=?", (wa_id,)).fetchone()
+    if not m:
+        raise LookupError("message not found")
+    if MEDIA_KINDS.get(m["message_type"]) not in DOWNLOAD_KINDS:
+        raise ValueError("only images and documents can be downloaded")
+    try:
+        data = evolution.media_base64(wa_id, m["group_jid"])
+        content = base64.b64decode(re.sub(r"^data:[^,]*,", "", data.get("base64") or ""))
+        if not content:
+            raise RuntimeError("empty attachment")
+        with db.connect() as c:
+            file_id = save_file(c, wa_id, content, m["file_name"] or data.get("fileName"),
+                                m["mimetype"] or data.get("mimetype"))
+            c.execute("INSERT OR REPLACE INTO media_fetch VALUES(?,?,?,?)", (wa_id, "ok", None, int(time.time())))
+        return file_id
+    except Exception as e:
+        with db.connect() as c:
+            c.execute("INSERT OR REPLACE INTO media_fetch VALUES(?,?,?,?)",
+                      (wa_id, "failed", str(e)[:500], int(time.time())))
+        raise
+
+
 def download_media(log, retry_failed=False):
     """Fetch images and documents posted in the in-scope groups."""
     with db.connect() as c:
@@ -189,21 +217,9 @@ def download_media(log, retry_failed=False):
             skipped += 1
             continue
         try:
-            data = evolution.media_base64(r["wa_id"])
-            b64 = data.get("base64") or ""
-            content = base64.b64decode(re.sub(r"^data:[^,]*,", "", b64))
-            if not content:
-                raise RuntimeError("empty attachment")
-            with db.connect() as c:
-                save_file(c, r["wa_id"], content, r["file_name"] or data.get("fileName"),
-                          r["mimetype"] or data.get("mimetype"))
-                c.execute("INSERT OR REPLACE INTO media_fetch VALUES(?,?,?,?)",
-                          (r["wa_id"], "ok", None, int(time.time())))
+            fetch_media(r["wa_id"])
             ok += 1
-        except Exception as e:
-            with db.connect() as c:
-                c.execute("INSERT OR REPLACE INTO media_fetch VALUES(?,?,?,?)",
-                          (r["wa_id"], "failed", str(e)[:500], int(time.time())))
+        except Exception:
             failed += 1
     log(f"Attachments: {ok} downloaded, {failed} unavailable (listed on the Sources page), "
         f"{skipped} video/audio skipped")

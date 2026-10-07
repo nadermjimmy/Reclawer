@@ -43,10 +43,13 @@ def find_messages(jid, page, page_size=100):
     return msgs.get("records", []), int(msgs.get("pages") or 1)
 
 
-def media_base64(wa_id):
+def media_base64(wa_id, jid=None):
     """Re-download a message's attachment through Evolution. Raises if WhatsApp no longer has it."""
+    key = {"id": wa_id}
+    if jid:
+        key.update(remoteJid=jid, fromMe=False)
     with _client() as h:
         r = h.post(f"/chat/getBase64FromMediaMessage/{INSTANCE}",
-                   json={"message": {"key": {"id": wa_id}}, "convertToMp4": False})
+                   json={"message": {"key": key}, "convertToMp4": False})
         r.raise_for_status()
         return r.json()

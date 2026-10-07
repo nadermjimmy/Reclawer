@@ -79,6 +79,34 @@ def test_sync_survives_slow_group_call(client):
     evolution.fetch_groups = fixtures.FakeEvolution().fetch_groups
 
 
+def test_feed(client):
+    assert client.get("/feed").status_code == 200
+    chans = client.get("/api/feed/channels").json()
+    uae = next(c for c in chans if c["jid"] == "111@g.us")
+    assert uae["count"] >= 7 and uae["name"] == "UAE Inventory"
+    assert [c["jid"] for c in client.get("/api/feed/channels?scope=ticked").json()] == ["111@g.us"]
+    res = client.get("/api/feed/messages", params={"jid": "111@g.us", "limit": 10}).json()
+    ts = [m["ts"] for m in res["messages"]]
+    assert ts == sorted(ts)  # oldest first, newest at the bottom
+    docs = client.get("/api/feed/messages", params={"jid": "111@g.us", "kind": "workbook"}).json()["messages"]
+    assert docs and all(m["file_name"].endswith(".xlsx") for m in docs)
+    ok = next(m for m in docs if m["file"])
+    gone = next(m for m in docs if m["id"] == "gone")
+    assert gone["media"] == "failed" and gone["file"] is None
+    prev = client.get(f"/api/feed/preview/{ok['file']['id']}").json()
+    assert prev["type"] == "sheets" and prev["sheets"][0]["rows"][1][0] in ("Unit No", "Unit")
+    older = client.get("/api/feed/messages", params={"jid": "111@g.us", "before": ts[0]}).json()["messages"]
+    assert all(m["ts"] < ts[0] for m in older)
+    # on-demand fetch: retry a failed one (fake Evolution still says it's gone) and fetch a fresh doc
+    assert client.post("/api/feed/media/gone").status_code == 422
+    import db
+    with db.connect() as c:
+        c.execute("DELETE FROM file_occurrences WHERE wa_id='doc3'")
+    r = client.post("/api/feed/media/doc3").json()
+    assert r["file"]["kind"] == "workbook"
+    assert client.get(f"/sources/file/{r['file']['id']}").headers["content-disposition"].startswith("attachment")
+
+
 def test_reset_last(client):
     import db
     assert client.post("/reset", data={"confirm": "nope"}, follow_redirects=False).headers["location"] == "/?reset=refused"

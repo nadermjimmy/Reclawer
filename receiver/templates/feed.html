@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#f2f2f7" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
+<title>Byit Channels</title>
+<link rel="stylesheet" href="/static/feed.css">
+</head>
+<body>
+<div class="app" id="app">
+  <aside class="side" aria-label="Channels">
+    <header class="side-head">
+      <div class="side-top">
+        <a class="back-link" href="/" title="Back to inventory">
+          <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          Inventory
+        </a>
+        <span class="live" id="live" title="Feed refreshes automatically"><i></i>Live</span>
+      </div>
+      <h1>Channels</h1>
+      <label class="search">
+        <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" stroke-width="2"/><path d="M20 20l-3.5-3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+        <input id="channelSearch" type="search" placeholder="Search channels" autocomplete="off">
+      </label>
+      <div class="segmented" role="tablist" id="scopeSeg">
+        <button role="tab" aria-selected="true" data-scope="all">All chats</button>
+        <button role="tab" aria-selected="false" data-scope="ticked">Inventory chats</button>
+        <span class="seg-thumb"></span>
+      </div>
+    </header>
+    <ul class="channel-list" id="channels"></ul>
+  </aside>
+
+  <main class="pane" id="pane">
+    <div class="empty-state" id="emptyState">
+      <div class="orb"></div>
+      <h2>Byit Channels</h2>
+      <p>Every developer chat as a read-only channel: their messages, availability sheets, PDFs and images in one feed.</p>
+    </div>
+
+    <section class="channel" id="channel" hidden>
+      <header class="ch-head glass">
+        <button class="icon-btn only-mobile" id="backBtn" aria-label="Back to channels">
+          <svg viewBox="0 0 24 24" width="22" height="22"><path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+        <div class="avatar" id="chAvatar"></div>
+        <div class="ch-title">
+          <h2 id="chName"></h2>
+          <p id="chMeta"></p>
+        </div>
+        <div class="chips" id="filters">
+          <button class="chip on" data-f="all">All</button>
+          <button class="chip" data-f="workbook">Sheets</button>
+          <button class="chip" data-f="pdf">PDFs</button>
+          <button class="chip" data-f="image">Images</button>
+        </div>
+        <button class="icon-btn" id="searchToggle" aria-label="Search in channel">
+          <svg viewBox="0 0 24 24" width="20" height="20"><circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" stroke-width="2"/><path d="M20 20l-3.5-3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+        </button>
+      </header>
+      <div class="ch-search glass" id="chSearchBar" hidden>
+        <input id="chSearch" type="search" placeholder="Search this channel" autocomplete="off">
+      </div>
+      <div class="float-day" id="floatDay" aria-hidden="true"></div>
+      <div class="feed" id="feed" tabindex="0" aria-live="polite">
+        <div class="feed-inner" id="feedInner"></div>
+      </div>
+      <button class="new-pill" id="newPill" hidden>New posts ↓</button>
+      <footer class="ch-foot glass">
+        <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><rect x="5" y="10" width="14" height="10" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M8 10V7a4 4 0 018 0v3" fill="none" stroke="currentColor" stroke-width="2"/></svg>
+        Read-only channel · posts mirrored from WhatsApp
+      </footer>
+    </section>
+  </main>
+</div>
+
+<div class="viewer" id="viewer" hidden>
+  <div class="viewer-backdrop" data-close></div>
+  <div class="viewer-card" role="dialog" aria-modal="true" aria-labelledby="viewerTitle">
+    <header class="viewer-head">
+      <div class="doc-icon" id="viewerIcon"></div>
+      <div class="viewer-title"><h3 id="viewerTitle"></h3><p id="viewerSub"></p></div>
+      <input class="viewer-filter" id="viewerFilter" type="search" placeholder="Filter rows" hidden>
+      <a class="icon-btn" id="viewerDownload" aria-label="Download" download>
+        <svg viewBox="0 0 24 24" width="20" height="20"><path d="M12 4v11m0 0l-4.5-4.5M12 15l4.5-4.5M5 20h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </a>
+      <button class="icon-btn" data-close aria-label="Close">
+        <svg viewBox="0 0 24 24" width="20" height="20"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
+      </button>
+    </header>
+    <nav class="sheet-tabs" id="sheetTabs"></nav>
+    <div class="viewer-body" id="viewerBody"></div>
+  </div>
+</div>
+
+<script src="/static/feed.js"></script>
+</body>
+</html>

@@ -60,6 +60,10 @@ app data (type `DELETE ALL`); WhatsApp and Evolution are not touched.
 - Unit status and phase status are stored separately; conflicts are flagged, not resolved silently.
 - Missing project facts show "Not supplied"; conflicting statements show "Conflict" with every source.
 
+**Feed** (`/feed`): every chat shown as a read-only WhatsApp-style channel - text with WhatsApp formatting,
+images, and spreadsheets/PDFs that open in a built-in viewer (sheet tabs, row filter, exact cell values).
+Attachments not downloaded yet are fetched from Evolution as you scroll to them; the feed refreshes every 15 s.
+
 **Tests:** `cd receiver && pip install -r requirements.txt pytest && python -m pytest tests`
 
 ## Notes

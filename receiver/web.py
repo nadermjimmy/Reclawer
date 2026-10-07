@@ -411,14 +411,15 @@ def sources(request: Request):
 
 
 @router.get("/sources/file/{file_id}")
-def source_file(file_id: int):
+def source_file(file_id: int, download: int = 0):
     with db.connect() as c:
         f = c.execute("SELECT * FROM source_files WHERE id=?", (file_id,)).fetchone()
     if not f or not os.path.exists(f["path"]):
         return HTMLResponse("File not found", 404)
     return FileResponse(f["path"], media_type=f["mimetype"] or None,
                         filename=f["file_name"] or os.path.basename(f["path"]),
-                        content_disposition_type="inline" if f["kind"] == "image" else "attachment")
+                        content_disposition_type="inline" if f["kind"] in ("image", "pdf") and not download
+                        else "attachment")
 
 
 @router.get("/sources/message/{wa_id}", response_class=HTMLResponse)
