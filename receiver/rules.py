@@ -1,8 +1,16 @@
-"""Owner corrections (owner_rules.json) enforced in code, independent of what Claude proposes."""
+"""Owner corrections (owner_rules_<market>.json) enforced in code, independent of what Claude proposes."""
 import json, os, re
 
-with open(os.path.join(os.path.dirname(__file__), "owner_rules.json"), encoding="utf-8") as f:
+MARKET = os.getenv("MARKET", "eg").lower()
+with open(os.path.join(os.path.dirname(__file__), f"owner_rules_{MARKET}.json"), encoding="utf-8") as f:
     RULES = json.load(f)
+
+MARKET_NAME = RULES["market_name"]            # "Egypt" / "the UAE"
+MARKET_SHORT = RULES["market"]                # "EG" / "UAE"
+CURRENCY = RULES["currency"]                  # "EGP" / "AED"
+CURRENCY_RE = re.compile(RULES["currency_pattern"], re.I)
+METRIC = RULES["price_area_metric"]           # "sq_m" / "sq_ft"
+METRIC_LABEL = "sq m" if METRIC == "sq_m" else "sq ft"
 
 
 def why_not_a_project(name):
@@ -39,3 +47,7 @@ def phase_number(label):
 def image_blocked(text):
     low = (text or "").lower()
     return next((t for t in RULES["image_blocklist_terms"] if t in low), None)
+
+
+def prompt_rules():
+    return "\n".join(f"- {r}" for r in RULES["prompt_rules"])

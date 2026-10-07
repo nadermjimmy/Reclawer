@@ -2,17 +2,19 @@
 {% block body %}
 <h1>Pipeline</h1>
 <div class="stats">
-  <div><b>{{ counts.groups }}</b>groups</div><div><b>{{ counts.in_scope }}</b>in scope</div>
+  <div><b>{{ counts.groups }}</b>chats</div><div><b>{{ counts.in_scope }}</b>in scope</div>
   <div><b>{{ counts.messages }}</b>messages</div><div><b>{{ counts.files }}</b>files</div>
   <div><b>{{ counts.projects }}</b>projects</div><div><b>{{ counts.units }}</b>units</div>
 </div>
+{% if request.query_params.get('reset') == 'done' %}<p class="ok">All data was deleted. Start again with step 1.</p>{% endif %}
+{% if request.query_params.get('reset') == 'refused' %}<p class="err">Not reset: type DELETE ALL exactly, and wait for any running step to finish.</p>{% endif %}
 {% if request.query_params.get('busy') %}<p class="err">Another step is still running. Wait for it to finish.</p>{% endif %}
 <p class="muted">Run the steps in order the first time. After that, re-run any step whenever new messages arrive;
 each step only processes what is new, and step 8 rebuilds the inventory from scratch.</p>
 <table class="steps">
 {% for key, title, desc, fn in steps %}
 <tr><td><b>{{ title }}</b><br><span class="muted">{{ desc }}</span>
-{% if key == 'sync_groups' %}<br><a href="/groups">Then choose the UAE group(s) on the Groups page.</a>{% endif %}</td>
+{% if key == 'sync_groups' %}<br><a href="/groups">Then tick the inventory chat(s) on the Chats page.</a>{% endif %}</td>
 <td class="right"><form method="post" action="/jobs/{{ key }}">
   {% if key in ('map_projects','parse_files','download_media') %}
   <label class="small"><input type="checkbox" name="redo" value="1">
@@ -29,4 +31,9 @@ each step only processes what is new, and step 8 rebuilds the inventory from scr
 <td><a href="/jobs/{{ j.id }}">log</a></td></tr>
 {% else %}<tr><td colspan="4" class="muted">Nothing run yet.</td></tr>{% endfor %}
 </table>
+<h2>Start over</h2>
+<form method="post" action="/reset" class="row danger">
+<span class="muted">Deletes every pulled message, downloaded file, mapping, fact, image decision and inventory row in this app
+(WhatsApp and Evolution are not touched). Type <b>DELETE ALL</b> to confirm.</span>
+<input name="confirm" autocomplete="off" placeholder="DELETE ALL"><button class="danger">Reset all data</button></form>
 {% endblock %}

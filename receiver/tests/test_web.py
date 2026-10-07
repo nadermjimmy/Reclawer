@@ -1,3 +1,4 @@
+import os
 import pytest
 from fastapi.testclient import TestClient
 
@@ -47,3 +48,30 @@ def test_webhook_still_works(client):
     with db.connect() as c:
         assert c.execute("SELECT origin FROM source_messages WHERE wa_id='live1'").fetchone()[0] == "webhook"
     assert client.get("/health").json()["ok"]
+
+
+def test_private_chats_and_instance_filter(client):
+    import db
+    with db.connect() as c:
+        assert c.execute("SELECT name FROM groups WHERE jid='201000000000@s.whatsapp.net'").fetchone()[0] == "Nada"
+        assert not c.execute("SELECT 1 FROM groups WHERE jid='status@broadcast'").fetchone()
+    dm = {"event": "messages.upsert", "instance": "byit-ops", "data": {
+        "key": {"remoteJid": "201000000000@s.whatsapp.net", "id": "dm1"}, "messageType": "conversation",
+        "message": {"conversation": "Unit B-12 available 3,000,000 EGP"}, "messageTimestamp": 3000}}
+    assert client.post("/webhook/t", json=dm).json() == {"ignored": "not a group"}
+    other = dict(dm, instance="old-instance", data=dict(dm["data"], key={"remoteJid": "1@g.us", "id": "x9"}))
+    assert client.post("/webhook/t", json=other).json() == {"ignored": "instance old-instance"}
+    with db.connect() as c:
+        assert c.execute("SELECT text FROM source_messages WHERE wa_id='dm1'").fetchone()[0].startswith("Unit B-12")
+        assert not c.execute("SELECT 1 FROM source_messages WHERE wa_id='x9'").fetchone()
+
+
+def test_reset_last(client):
+    import db
+    assert client.post("/reset", data={"confirm": "nope"}, follow_redirects=False).headers["location"] == "/?reset=refused"
+    assert client.post("/reset", data={"confirm": "DELETE ALL"}, follow_redirects=False).headers["location"] == "/?reset=done"
+    with db.connect() as c:
+        for t in ("source_messages", "source_files", "units", "label_mappings", "messages", "groups"):
+            assert c.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0] == 0, t
+    assert not [f for f in os.listdir(db.MEDIA_DIR) if os.path.isfile(os.path.join(db.MEDIA_DIR, f))]
+    assert client.get("/").status_code == 200

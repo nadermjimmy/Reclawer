@@ -1,5 +1,5 @@
 {
-  "_comment": "Owner corrections applied on every inventory build. Edit and rebuild; no code change needed. 'locations' are labels that must never become projects (add more as the owner identifies them).",
+  "_comment": "UAE owner corrections. Used when MARKET=uae. Edit and rebuild; no code change needed.",
   "not_project_names": [
     "Dubai Hills",
     "No Flip or Change the Unit"
@@ -33,5 +33,16 @@
     "mercedes",
     "g63",
     "g 63"
+  ],
+  "market": "UAE",
+  "market_name": "the UAE",
+  "currency": "AED",
+  "currency_pattern": "\\baed\\b|د\\.إ|dirham",
+  "price_area_metric": "sq_ft",
+  "prompt_rules": [
+    "\"Dubai Hills\" is a location; never output it as a project name.",
+    "\"No Flip or Change the Unit\" is an instruction/restriction, not a project.",
+    "Brabus is ONE parent project; its towers (e.g. Tower 1, Tower 2) are phases under it.",
+    "Verdana is ONE parent project with six phases. Keep the source phase label exactly; never renumber."
   ]
 }

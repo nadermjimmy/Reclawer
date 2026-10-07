@@ -49,3 +49,4 @@ form.row,.filters{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0;align-items:c
 .narrow label{display:flex;flex-direction:column;gap:4px}
 table.units{font-size:13px}
 @media (max-width:800px){table{display:block;overflow-x:auto}}
+button.danger{background:var(--err);border-color:var(--err)}form.danger{border:1px solid var(--err);padding:10px;border-radius:8px}

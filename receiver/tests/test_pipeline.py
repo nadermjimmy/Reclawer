@@ -15,7 +15,7 @@ def q(db, sql, *a):
 
 
 def test_history_and_files(built):
-    assert q(built, "SELECT COUNT(*) FROM source_messages")[0][0] == 8
+    assert q(built, "SELECT COUNT(*) FROM source_messages")[0][0] == 7  # only ticked chats are pulled
     # identical workbook posted twice is stored once, both posts recorded
     assert q(built, "SELECT COUNT(*) FROM source_files")[0][0] == 3  # Egypt group not in scope -> not downloaded
     assert q(built, "SELECT COUNT(*) FROM file_occurrences")[0][0] == 4
@@ -70,7 +70,7 @@ def test_reconciliation_and_rebuild_idempotent(built):
     before = q(built, "SELECT COUNT(*) FROM units")[0][0]
     jobs.run_now("rebuild", build.rebuild)
     assert q(built, "SELECT COUNT(*) FROM units")[0][0] == before
-    assert q(built, "SELECT COUNT(*) FROM source_messages")[0][0] == 8
+    assert q(built, "SELECT COUNT(*) FROM source_messages")[0][0] == 7  # only ticked chats are pulled
 
 
 def test_reviewer_decisions(built):

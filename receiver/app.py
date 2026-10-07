@@ -2,7 +2,7 @@
 import os, re, sqlite3, time
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.staticfiles import StaticFiles
-import db as store, history, web
+import db as store, evolution, history, web
 
 DB = os.getenv("DB_PATH", "/data/messages.db")
 TOKEN = os.environ["WEBHOOK_TOKEN"]
@@ -40,6 +40,8 @@ async def webhook(token: str, request: Request):
         raise HTTPException(403)
     body = await request.json()
     event = body.get("event", "")
+    if body.get("instance") and body["instance"] != evolution.INSTANCE:
+        return {"ignored": f"instance {body['instance']}"}  # only the instance named in EVOLUTION_INSTANCE
 
     if event == "groups.upsert":
         items = body.get("data") or []
@@ -57,10 +59,10 @@ async def webhook(token: str, request: Request):
     d = body.get("data", {})
     key = d.get("key", {})
     jid = key.get("remoteJid", "")
-    if not jid.endswith("@g.us"):
-        return {"ignored": "not a group"}
-    with store.connect() as c:  # full copy for the inventory (attachments included, no noise filter)
+    with store.connect() as c:  # full copy for the inventory (groups + private chats, no noise filter)
         history.store_message(c, history.parse_record(d, "webhook"))
+    if not jid.endswith("@g.us"):
+        return {"ignored": "not a group"}  # the digest stays groups-only
     if ALLOWED and jid not in ALLOWED:
         return {"ignored": "group not allowed"}
 

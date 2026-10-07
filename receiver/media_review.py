@@ -5,7 +5,7 @@ import db, llm, mapping, rows, rules
 CLASSES = ["project_render", "project_photo", "unit_photo", "floor_plan", "location_map", "brochure_offer",
            "generic_campaign", "unrelated", "uncertain"]
 
-SYSTEM = """You classify an image posted in a UAE real-estate brokers' WhatsApp group.
+SYSTEM = f"""You classify an image posted in a WhatsApp chat about {rules.MARKET_NAME} real estate.
 Look at the actual pixels and read any visible text, then read the surrounding messages.
 - classification: what the image is. A campaign render is not a unit photo; a masterplan is not a photo.
 - project_name: only if BOTH the image content and the messages tie it to that project. Otherwise "".

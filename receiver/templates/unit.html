@@ -10,7 +10,7 @@
 <tr><td>{{ s.snapshot_ts|ts }}</td><td>{{ s.currency ~ ' ' if s.currency }}{{ s.price_raw or '—' }}</td><td>{{ areas(s) }}</td>
 <td>{{ unit_status(s) }}</td><td>{{ s.unit_type_raw or '—' }}</td>
 <td><a href="/sources/row/{{ s.source_row_id }}">{{ s.file_name }} · {{ s.sheet }} row {{ s.row_number }}</a>
-{% if s.ppsf_inputs %}<details class="small"><summary>price per sq ft calculation</summary><pre>{{ s.ppsf_inputs }}</pre></details>{% endif %}</td></tr>
+{% if s.ppsf_inputs %}<details class="small"><summary>price per {{ market.metric }} calculation</summary><pre>{{ s.ppsf_inputs }}</pre></details>{% endif %}</td></tr>
 {% endfor %}
 </table>
 {% else %}<p>Unit not found.</p>{% endif %}

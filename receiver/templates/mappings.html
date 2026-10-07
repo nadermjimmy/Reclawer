@@ -6,7 +6,7 @@
 <a href="?state={{ s }}" class="{% if s == state %}active{% endif %}">{{ n }}</a>{% endfor %}
 </div>
 <p class="muted">Each line is one table (or one titled section of a sheet). Approving sets the parent project and phase for all of its rows.
-Only high-confidence UAE proposals are used before approval; everything else stays queued.</p>
+Only high-confidence {{ market.name }} proposals are used before approval; everything else stays queued.</p>
 <datalist id="known">{% for k in known %}<option value="{{ k }}">{% endfor %}</datalist>
 <table>
 <tr><th>Source</th><th>Rows</th><th>Proposal</th><th>Decide</th></tr>
@@ -16,7 +16,7 @@ Only high-confidence UAE proposals are used before approval; everything else sta
 {% if x.raw_project %} · project cell “{{ x.raw_project }}”{% endif %}{% if x.raw_phase %} · phase cell “{{ x.raw_phase }}”{% endif %}</span></td>
 <td>{{ x.row_count }}</td>
 <td>{% if x.decision %}<b>{{ x.decision|label }}</b> {{ x.project_name }}{% if x.phase_label %} › {{ x.phase_label }}{% endif %}
-<span class="small">({{ x.confidence }}, UAE: {{ x.is_uae }}, {{ x.source }}, {{ x.review_state }})</span><br>
+<span class="small">({{ x.confidence }}, in {{ market.short }}: {{ x.is_uae }}, {{ x.source }}, {{ x.review_state }})</span><br>
 <span class="small muted">{{ x.rationale }}</span>
 {% if warn.get(x.key) %}<div class="small err">Blocked by owner rules: {{ warn[x.key] }}. These rows stay queued until a real parent project is set.</div>{% endif %}{% else %}<span class="muted">—</span>{% endif %}</td>
 <td><form method="post" action="/review/mappings" class="stack">
@@ -26,7 +26,7 @@ Only high-confidence UAE proposals are used before approval; everything else sta
 <input name="developer" value="{{ x.developer or '' }}" placeholder="Developer">
 <span><button name="action" value="approve">Approve</button>
 <button name="action" value="reject" class="secondary">Can't tell</button>
-<button name="action" value="exclude" class="secondary">Not UAE</button></span>
+<button name="action" value="exclude" class="secondary">Not {{ market.short }}</button></span>
 </form></td></tr>
 {% else %}<tr><td colspan="4" class="muted">Nothing here.</td></tr>{% endfor %}
 </table>

@@ -1,0 +1,56 @@
+{
+  "_comment": "Egypt owner rules (default market). Edit and rebuild; no code change needed. 'locations' are labels that must never become projects; add more as you find them.",
+  "market": "EG",
+  "market_name": "Egypt",
+  "currency": "EGP",
+  "currency_pattern": "\\begp\\b|\\bl\\.?e\\.?\\b|جنيه|ج\\.م|pound",
+  "price_area_metric": "sq_m",
+  "not_project_names": [],
+  "not_project_patterns": [
+    "^no\\s*flip",
+    "change\\s+the\\s+unit",
+    "^(tower|phase|block|building|bldg|cluster|wing)\\s*[-#:]?\\s*\\w{0,3}$",
+    "^(sold\\s*out|available|availability|inventory|price\\s*list|offer|launch)\\b"
+  ],
+  "locations": [
+    "New Cairo",
+    "Fifth Settlement",
+    "5th Settlement",
+    "Tagamoa",
+    "Sheikh Zayed",
+    "6th of October",
+    "October",
+    "New Capital",
+    "New Administrative Capital",
+    "Mostakbal City",
+    "North Coast",
+    "Sahel",
+    "Ain Sokhna",
+    "Sokhna",
+    "New Zayed",
+    "Madinaty",
+    "Shorouk",
+    "El Shorouk",
+    "Obour",
+    "Maadi",
+    "Heliopolis",
+    "Nasr City",
+    "Ras El Hekma",
+    "Alamein",
+    "New Alamein",
+    "Hurghada",
+    "El Gouna"
+  ],
+  "one_parent_groups": [],
+  "phase_limits": {},
+  "prompt_rules": [
+    "City/area names such as New Cairo, Sheikh Zayed, 6th of October, New Capital, North Coast (Sahel) or Ain Sokhna are locations, never projects."
+  ],
+  "image_blocklist_terms": [
+    "g-class",
+    "g class",
+    "mercedes",
+    "g63",
+    "g 63"
+  ]
+}

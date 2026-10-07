@@ -20,6 +20,14 @@ def fetch_groups():
         return r.json()
 
 
+def find_chats():
+    with _client() as h:
+        r = h.post(f"/chat/findChats/{INSTANCE}", json={})
+        r.raise_for_status()
+        body = r.json()
+    return body if isinstance(body, list) else body.get("chats") or body.get("records") or []
+
+
 def find_messages(jid, page, page_size=100):
     """One page of a chat's stored history. Returns (records, total_pages)."""
     with _client() as h:

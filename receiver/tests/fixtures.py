@@ -62,6 +62,10 @@ class FakeEvolution:
     def fetch_groups(self):
         return [{"id": UAE, "subject": "UAE Inventory"}, {"id": EGY, "subject": "Egypt"}]
 
+    def find_chats(self):
+        return [{"remoteJid": "201000000000@s.whatsapp.net", "pushName": "Nada"},
+                {"remoteJid": UAE}, {"remoteJid": "status@broadcast"}]
+
     def find_messages(self, jid, page, page_size=100):
         return HISTORY.get(jid, []), 1
 
@@ -78,7 +82,7 @@ def fake_llm(system, content, schema, max_tokens=16000):
         for ctx in json.loads(content)["contexts"]:
             f, sheet, section = ctx["file_name"], ctx["sheet"], ctx["section_title"]
             m = {"key": ctx["key"], "decision": "project", "developer": "", "project_name": "",
-                 "phase_label": "", "confidence": "high", "is_uae": "yes", "rationale": f"file {f}"}
+                 "phase_label": "", "confidence": "high", "in_market": "yes", "rationale": f"file {f}"}
             if f.startswith("Brabus"):
                 m.update(project_name="Brabus Island" if sheet == "Tower 1" else "Brabus Island Tower 2",
                          phase_label="Tower 1" if sheet == "Tower 1" else "")
@@ -108,7 +112,7 @@ def run_pipeline():
     global _done
     import db, history, parse_files, mapping, facts, build, llm, evolution, jobs
     fake = FakeEvolution()
-    for name in ("fetch_groups", "find_messages", "media_base64"):
+    for name in ("fetch_groups", "find_chats", "find_messages", "media_base64"):
         setattr(evolution, name, getattr(fake, name))
     llm.call_json = fake_llm
     if _done:

@@ -10,7 +10,8 @@ REQUIRED_FACTS = ["location", "service_charge", "payment_plan", "completion_rate
 UNIT_STATUS = [("sold", r"\bsold\b"), ("reserved", r"reserv|booked|\bhold\b|block"),
                ("under_process", r"process|pending"), ("available", r"avail|\bopen\b|ready|vacant|for sale"),
                ("announced", r"announc|coming soon|launch")]
-NUMBER = re.compile(r"^\s*(aed|د\.إ)?\s*([0-9][0-9,]*(\.[0-9]+)?)\s*(aed)?\s*$", re.I)
+CUR = r"(aed|egp|l\.?e\.?|د\.إ|ج\.م)"
+NUMBER = re.compile(rf"^\s*{CUR}?\s*([0-9][0-9,]*(\.[0-9]+)?)\s*{CUR}?\s*$", re.I)
 
 
 def slugify(name):
@@ -27,9 +28,22 @@ def unit_status(raw):
 
 
 def parse_number(raw):
-    """A plain number (optionally with commas / AED). Anything else (1.2M, ranges, text) is not parsed."""
+    """A plain number (optionally with commas / a currency). Anything else (1.2M, ranges, text) is not parsed."""
     m = NUMBER.match(raw or "")
     return float(m.group(2).replace(",", "")) if m else None
+
+
+def price_per_area(price, currency, area):
+    """Derived price per sq m (Egypt) or per sq ft (UAE). Returns (value, inputs_json)."""
+    value, unit = area["value"], area["unit"]
+    if rules.METRIC == "sq_ft":
+        size, conv = (value * SQM_TO_SQFT, "area converted: sq m x 10.7639104167") if unit == "sq_m" else (value, "")
+    else:
+        size, conv = (value / SQM_TO_SQFT, "area converted: sq ft / 10.7639104167") if unit == "sq_ft" else (value, "")
+    formula = f"listed_price / area_{rules.METRIC}" + (f" ({conv})" if conv else "")
+    return round(price / size, 2), json.dumps(
+        {"formula": formula, "listed_price": price, "currency": currency, "area_column": area["label"],
+         "area_raw": area["raw"], "area_unit": unit}, ensure_ascii=False)
 
 
 def effective(m):
@@ -40,11 +54,11 @@ def effective(m):
         return "queued", None, None, None, "proposal rejected by reviewer"
     approved = m["review_state"] == "approved"
     if m["decision"] == "exclude_scope" and (approved or m["is_uae"] == "no"):
-        return "excluded", None, None, None, "outside UAE scope"
+        return "excluded", None, None, None, f"outside {rules.MARKET_NAME} scope"
     if m["decision"] != "project":
         return "queued", None, None, None, m["rationale"] or "parent project not established"
     if not approved and (m["confidence"] != "high" or m["is_uae"] != "yes"):
-        return "queued", None, None, None, f"low-confidence proposal ({m['confidence']}, UAE: {m['is_uae']})"
+        return "queued", None, None, None, f"low-confidence proposal ({m['confidence']}, in {rules.MARKET_SHORT}: {m['is_uae']})"
     bad = rules.why_not_a_project(m["project_name"])
     if bad:
         return "queued", None, None, None, bad
@@ -164,7 +178,7 @@ def rebuild(log):
             price_raw = price[2]
             price_value = parse_number(price_raw)
             ctx_text = " ".join([price[1], file_names.get(r["file_id"], ""), r["sheet"], price_raw])
-            currency = price[4] or ("AED" if re.search(r"\baed\b|د\.إ", ctx_text, re.I) else "")
+            currency = price[4] or (rules.CURRENCY if rules.CURRENCY_RE.search(ctx_text) else "")
             if price_raw and price_value is None:
                 bad_price.setdefault((r["file_id"], r["sheet"]), []).append(r["row_number"])
             areas = [{"label": h, "raw": v, "value": parse_number(v), "unit": u}
@@ -177,12 +191,7 @@ def rebuild(log):
                 no_unit_area.setdefault((r["file_id"], r["sheet"]), 0)
                 no_unit_area[(r["file_id"], r["sheet"])] += 1
             if price_value and currency and primary:
-                sqft = primary["value"] * (SQM_TO_SQFT if primary["unit"] == "sq_m" else 1)
-                ppsf = round(price_value / sqft, 2)
-                inputs = json.dumps({"formula": "listed_price / area_sq_ft" + (
-                    " (area converted: sq m x 10.7639104167)" if primary["unit"] == "sq_m" else ""),
-                    "listed_price": price_value, "currency": currency, "area_column": primary["label"],
-                    "area_raw": primary["raw"], "area_unit": primary["unit"]}, ensure_ascii=False)
+                ppsf, inputs = price_per_area(price_value, currency, primary)
             status_raw = rows.first(vals, "status")
             notes = " | ".join(x[2] for x in vals.get("notes", []) if x[2])
             restriction = " | ".join(t for t in (r["section_label"] or "", rows.first(vals, "project"), notes)
@@ -202,7 +211,8 @@ def rebuild(log):
 
         for (fid, sheet), n in no_unit_area.items():
             issue("unknown_area_unit", "medium", "sheet", f"{fid}:{sheet}",
-                  f"{n} rows have areas but the sheet doesn't say sq ft or sq m; price per sq ft not calculated",
+                  f"{n} rows have areas but the sheet doesn't say sq ft or sq m; price per {rules.METRIC_LABEL} not "
+                  "calculated (set the unit on the table's review page if you know it)",
                   file=file_names.get(fid), sheet=sheet)
         for (fid, sheet), rs in bad_price.items():
             issue("price_not_plain_number", "low", "sheet", f"{fid}:{sheet}",

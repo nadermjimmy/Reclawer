@@ -1,28 +1,29 @@
 """Turn downloaded workbooks, CSVs and PDFs into source_rows, keeping every cell exactly as stored."""
 import csv, datetime, io, json, re
-import db
+import db, rules
 
 PARSER_VERSION = "files-1"
 
 # Header text -> column role. Order matters: the first match wins.
 ROLES = [
-    ("status", r"status|availab"),
-    ("source_price_per_area", r"per\s*(sq|ft|m\b)|psf|/\s*sq"),
-    ("payment_plan", r"payment|instal+ment|down\s*pay"),
-    ("price", r"price|\baed\b|amount|selling|asking|\bcost\b|\bvalue\b"),
-    ("handover", r"handover|hand\s*over|completion|delivery"),
-    ("service_charge", r"service"),
-    ("area", r"area|\bbua\b|size|sq\.?\s*ft|sqft|sq\.?\s*m|sqm|ft2|m2|suite|balcony|terrace|gfa|saleable"),
-    ("unit_type", r"type|bed|bhk|\bbr\b|category|configuration|layout"),
-    ("floor", r"floor|level|\blvl\b"),
-    ("view", r"view|facing|orientation"),
-    ("project", r"^\s*project|project\s*name"),
-    ("phase", r"phase|building|bldg|tower|block|cluster|wing"),
-    ("unit_code", r"unit|\bapt|apartment|villa|plot|property|^no\.?$|number|\bref\b|code"),
-    ("notes", r"remark|note|comment|condition|restriction"),
+    ("status", r"status|availab|الحالة|حالة|متاح"),
+    ("source_price_per_area", r"per\s*(sq|ft|m\b)|psf|/\s*sq|سعر\s*المتر|للمتر|متر\s*/"),
+    ("payment_plan", r"payment|instal+ment|down\s*pay|سداد|تقسيط|مقدم|أقساط|اقساط"),
+    ("price", r"price|\baed\b|\begp\b|amount|selling|asking|\bcost\b|\bvalue\b|سعر|ثمن|إجمالي|اجمالي"),
+    ("handover", r"handover|hand\s*over|completion|delivery|استلام|تسليم"),
+    ("service_charge", r"service|صيانة|وديعة"),
+    ("area", r"area|\bbua\b|size|sq\.?\s*ft|sqft|sq\.?\s*m|sqm|ft2|m2|suite|balcony|terrace|gfa|saleable|garden"
+             r"|roof|مساحة|المساحة|م2|م²|متر|حديقة|رووف"),
+    ("unit_type", r"type|bed|bhk|\bbr\b|category|configuration|layout|نوع|غرف"),
+    ("floor", r"floor|level|\blvl\b|الدور|دور|طابق"),
+    ("view", r"view|facing|orientation|إطلالة|اطلالة|فيو"),
+    ("project", r"^\s*project|project\s*name|مشروع|المشروع|كمبوند"),
+    ("phase", r"phase|building|bldg|tower|block|cluster|wing|zone|مرحلة|المرحلة|عمارة|برج|بلوك|زون"),
+    ("unit_code", r"unit|\bapt|apartment|villa|plot|property|^no\.?$|number|\bref\b|code|الوحدة|وحدة|كود|رقم"),
+    ("notes", r"remark|note|comment|condition|restriction|ملاحظات|ملاحظة"),
 ]
 SQFT = re.compile(r"sq\.?\s*f|sqft|ft2|ft²|square\s*f", re.I)
-SQM = re.compile(r"sq\.?\s*m|sqm|m2|m²|square\s*m", re.I)
+SQM = re.compile(r"sq\.?\s*m|sqm|m2|m²|square\s*m|م2|م²|متر", re.I)
 
 
 def role_of(header):
@@ -78,7 +79,7 @@ def detect_layout(rows):
             continue
         cols.append({"index": idx, "header": header, "role": role_of(header),
                      "area_unit": "sq_ft" if SQFT.search(header) else "sq_m" if SQM.search(header) else "",
-                     "currency": "AED" if re.search(r"\baed\b", header, re.I) else ""})
+                     "currency": rules.CURRENCY if rules.CURRENCY_RE.search(header) else ""})
     # a sheet has one unit-code column; extra matches are kept as notes-like source columns
     seen = set()
     for col in cols:

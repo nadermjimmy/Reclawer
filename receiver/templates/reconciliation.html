@@ -8,7 +8,7 @@
 <tr><th>Unit rows in sources</th><td><b>{{ rep.unit_rows_in_sources }}</b></td></tr>
 <tr><th>— mapped to a project</th><td>{{ rep.mapped }}</td></tr>
 <tr><th>— queued for review</th><td>{{ rep.queued }}</td></tr>
-<tr><th>— excluded (outside UAE)</th><td>{{ rep.excluded_by_scope }}</td></tr>
+<tr><th>— excluded (outside {{ market.name }})</th><td>{{ rep.excluded_by_scope }}</td></tr>
 <tr><th>Adds up</th><td class="{{ 'ok' if rep.adds_up else 'err' }}">{{ 'Yes' if rep.adds_up else 'NO — rebuild the inventory' }}</td></tr>
 <tr><th>Distinct units (mapped)</th><td>{{ rep.distinct_units }}</td></tr>
 <tr><th>Projects</th><td>{{ rep.projects }}</td></tr>

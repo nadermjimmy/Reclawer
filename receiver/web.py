@@ -29,6 +29,9 @@ templates.env.filters["ts"] = fmt_ts
 templates.env.filters["money"] = fmt_money
 templates.env.filters["label"] = lambda s: (s or "").replace("_", " ")
 templates.env.filters["fromjson"] = lambda s: json.loads(s) if s else {}
+templates.env.filters["chat_kind"] = lambda jid: "Group" if (jid or "").endswith("@g.us") else "Private"
+templates.env.globals["market"] = {"name": rules.MARKET_NAME, "short": rules.MARKET_SHORT,
+                                   "currency": rules.CURRENCY, "metric": rules.METRIC_LABEL}
 
 
 def _sign(exp):
@@ -85,9 +88,10 @@ def logout():
 
 # ---------- dashboard & jobs ----------
 STEPS = [
-    ("sync_groups", "1. Sync groups", "Fetch the list of WhatsApp groups from Evolution.", history.sync_groups),
-    ("pull_history", "2. Pull history", "Copy every group's stored messages into the bridge.", history.pull_history),
-    ("download_media", "3. Download attachments", "Fetch workbooks, PDFs and images from the in-scope groups.",
+    ("sync_groups", "1. Sync chats", "Fetch the list of groups and private chats from Evolution.",
+     history.sync_groups),
+    ("pull_history", "2. Pull history", "Copy the ticked chats' stored messages into the app.", history.pull_history),
+    ("download_media", "3. Download attachments", "Fetch workbooks, PDFs and images from the ticked chats.",
      history.download_media),
     ("parse_files", "4. Read files", "Read every workbook/CSV/PDF cell by cell.", parse_files.parse_all),
     ("map_projects", "5. Map projects (Claude)", "Propose the parent project / phase for each table.",
@@ -116,6 +120,14 @@ def dashboard(request: Request):
     return page(request, "dashboard.html", steps=STEPS, recent=recent, counts=counts)
 
 
+@router.post("/reset")
+def reset_all(confirm: str = Form("")):
+    if confirm.strip() != "DELETE ALL" or jobs.running():
+        return RedirectResponse("/?reset=refused", 303)
+    db.reset()
+    return RedirectResponse("/?reset=done", 303)
+
+
 @router.post("/jobs/{name}")
 def start_job(name: str, redo: str = Form("")):
     if name not in STEP_FN:
@@ -140,7 +152,7 @@ def groups(request: Request):
         gs = c.execute("SELECT g.jid, g.name, COALESCE(s.in_scope,0) in_scope, "
                        "(SELECT COUNT(*) FROM source_messages m WHERE m.group_jid=g.jid) n, "
                        "(SELECT MIN(ts) FROM source_messages m WHERE m.group_jid=g.jid) first_ts "
-                       "FROM groups g LEFT JOIN group_scope s ON s.jid=g.jid ORDER BY in_scope DESC, n DESC").fetchall()
+                       "FROM groups g LEFT JOIN group_scope s ON s.jid=g.jid ORDER BY in_scope DESC, n DESC, g.name").fetchall()
     return page(request, "groups.html", groups=gs)
 
 
@@ -324,7 +336,7 @@ def save_mapping(key: str = Form(...), action: str = Form(...), project_name: st
                       "review_state='rejected', updated_at=excluded.updated_at", (key, int(time.time())))
         elif action == "exclude":
             c.execute("INSERT OR REPLACE INTO label_mappings VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-                      (key, "exclude_scope", "", "", "", "high", "Reviewer: outside UAE scope", "no", "reviewer",
+                      (key, "exclude_scope", "", "", "", "high", f"Reviewer: outside {rules.MARKET_NAME} scope", "no", "reviewer",
                        "approved", int(time.time())))
         else:  # approve, possibly with edits
             c.execute("INSERT OR REPLACE INTO label_mappings VALUES(?,?,?,?,?,?,?,?,?,?,?)",

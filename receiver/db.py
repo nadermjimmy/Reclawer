@@ -12,7 +12,7 @@ CREATE TABLE IF NOT EXISTS messages(
     sender_name TEXT, ts INTEGER, type TEXT, text TEXT, processed INTEGER DEFAULT 0);
 CREATE TABLE IF NOT EXISTS groups(jid TEXT PRIMARY KEY, name TEXT);
 
--- which groups feed the UAE inventory
+-- which chats feed the inventory
 CREATE TABLE IF NOT EXISTS group_scope(jid TEXT PRIMARY KEY, in_scope INTEGER NOT NULL DEFAULT 0, note TEXT);
 
 -- immutable sources
@@ -102,6 +102,25 @@ def init():
     with connect() as c:
         c.executescript(SCHEMA)
         c.execute("UPDATE jobs SET status='interrupted' WHERE status='running'")  # container restarted mid-job
+
+
+def reset():
+    """Delete every message, file, decision and inventory row, and the downloaded media. Schema stays."""
+    with connect() as c:
+        tables = [r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table' "
+                                          "AND name NOT LIKE 'sqlite_%'")]
+        c.execute("PRAGMA foreign_keys=OFF")
+        for t in tables:
+            c.execute(f"DELETE FROM {t}")
+    if os.path.isdir(MEDIA_DIR):
+        for name in os.listdir(MEDIA_DIR):
+            path = os.path.join(MEDIA_DIR, name)
+            if os.path.isfile(path):
+                os.remove(path)
+    c = sqlite3.connect(DB)
+    c.execute("VACUUM")
+    c.close()
+    return len(tables)
 
 
 def scoped_groups(c):

@@ -18,7 +18,7 @@
 {% macro unit_table(units, show_project=False) -%}
 <table class="units">
 <tr>{% if show_project %}<th>Project</th>{% endif %}<th>Phase / building</th><th>Unit</th><th>Type</th><th>Floor</th><th>View</th>
-<th>Listed price</th><th>Area</th><th title="Calculated: listed price ÷ area in sq ft">Price per sq ft<br><span class="small muted">calculated</span></th>
+<th>Listed price</th><th>Area</th><th title="Calculated: listed price ÷ area in {{ market.metric }}">Price per {{ market.metric }}<br><span class="small muted">calculated</span></th>
 <th>Unit status</th><th>Source</th></tr>
 {% for s in units %}
 <tr>{% if show_project %}<td><a href="/projects/{{ s.slug }}">{{ s.project }}</a></td>{% endif %}
@@ -27,7 +27,7 @@
 <td>{{ s.unit_type_raw or '—' }}</td><td>{{ s.floor_raw or '—' }}</td><td>{{ s.view_raw or '—' }}</td>
 <td class="num">{% if s.price_raw %}{{ s.currency ~ ' ' if s.currency }}{{ s.price_raw }}{% else %}<span class="muted">Not supplied</span>{% endif %}</td>
 <td>{{ areas(s) }}</td>
-<td class="num">{% if s.price_per_sqft %}{{ s.price_per_sqft|money }}{% else %}<span class="muted" title="Needs a plain listed price, a currency and an area in sq ft or sq m">—</span>{% endif %}</td>
+<td class="num">{% if s.price_per_sqft %}{{ s.price_per_sqft|money }}{% else %}<span class="muted" title="Needs a plain listed price, a currency and an area unit (sq ft or sq m)">—</span>{% endif %}</td>
 <td>{{ unit_status(s) }}</td>
 <td><a class="small" href="/sources/row/{{ s.source_row_id }}">row</a> <span class="small muted">{{ s.snapshot_ts|ts }}</span></td></tr>
 {% else %}<tr><td colspan="11" class="muted">No units.</td></tr>{% endfor %}

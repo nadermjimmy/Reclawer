@@ -24,18 +24,20 @@ WhatsApp groups -> Evolution API (Railway, public) -> receiver (Railway, private
 
 ## Inventory web app
 
-The receiver also serves a password-protected web app that turns the UAE group's history and attachments
+The receiver also serves a password-protected web app that turns the chosen chats' history and attachments
 into a project -> phase/building -> unit inventory with full source tracing. Code: `receiver/` (`web.py`,
 `history.py`, `parse_files.py`, `mapping.py`, `facts.py`, `media_review.py`, `build.py`).
 
 **Setup (once):** on the `receiver` service add variables `APP_PASSWORD`, `EVOLUTION_URL` (the Evolution
-https domain), `EVOLUTION_API_KEY` (Evolution's `AUTHENTICATION_API_KEY`), `EVOLUTION_INSTANCE=byit-ops`,
-then Settings -> Networking -> Generate Domain and open it.
+https domain), `EVOLUTION_API_KEY` (Evolution's `AUTHENTICATION_API_KEY`), `EVOLUTION_INSTANCE` (the instance
+whose chats feed the app; webhooks from any other instance are ignored) and `MARKET` (`eg` - default - or
+`uae`), then Settings -> Networking -> Generate Domain and open it. **Start over** on the dashboard deletes all
+app data (type `DELETE ALL`); WhatsApp and Evolution are not touched.
 
 **Pipeline** (Dashboard, run in order; each step only processes what's new):
-1. Sync groups -> tick the UAE inventory group(s) on **Groups**.
-2. Pull history (all groups, from Evolution's database).
-3. Download attachments (in-scope groups; WhatsApp may no longer have old media - listed on **Sources**).
+1. Sync chats (groups and private chats) -> tick the inventory chat(s) on **Chats**.
+2. Pull history for the ticked chats (from Evolution's database).
+3. Download attachments (ticked chats; WhatsApp may no longer have old media - listed on **Sources**).
 4. Read files: every workbook/CSV cell and PDF page stored verbatim (`source_rows`), header + column roles
    detected per sheet (fixable on the review page).
 5. Map projects (Claude): proposes parent project / phase per table using only the file and its chat context.
@@ -49,10 +51,11 @@ then Settings -> Networking -> Generate Domain and open it.
 - Source values are never changed: unit codes, listed prices and areas are stored as text exactly as in the
   cell; parsed numbers and price per sq ft are separate, labelled derived fields (with formula + inputs).
   Price per sq ft is only calculated when the price is a plain number, a currency is stated and the area
-  unit (sq ft / sq m, 1 sq m = 10.7639104167 sq ft) is stated.
-- Owner corrections live in `receiver/owner_rules.json` (not-a-project names, locations, one-parent groups
-  such as Brabus and Verdana, phase limits, image blocklist). Edit it and rebuild.
-- Only high-confidence UAE proposals are used before approval; everything else stays in the review queue and
+  unit (sq ft / sq m, 1 sq m = 10.7639104167 sq ft) is stated. Arabic column headers are recognised.
+- Owner corrections live in `receiver/owner_rules_<market>.json` (`eg` / `uae`): market name, currency,
+  price-per-area metric (sq m for Egypt, sq ft for UAE), not-a-project names, locations, one-parent groups
+  (UAE: Brabus, Verdana), phase limits, image blocklist. Edit and rebuild.
+- Only high-confidence in-market proposals are used before approval; everything else stays in the review queue and
   still counts in **Reconciliation** (mapped + queued + excluded = rows in sources).
 - Unit status and phase status are stored separately; conflicts are flagged, not resolved silently.
 - Missing project facts show "Not supplied"; conflicting statements show "Conflict" with every source.

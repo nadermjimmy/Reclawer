@@ -1,15 +1,15 @@
 {% extends "base.html" %}
 {% block body %}
-<h1>Groups</h1>
-<p class="muted">Tick the UAE inventory group(s). Only ticked groups feed the inventory; every group's messages
-stay browsable.</p>
+<h1>Chats</h1>
+<p class="muted">Tick the chat(s) with {{ market.name }} inventory (groups or private chats). Only ticked chats are pulled and
+feed the inventory.</p>
 <form method="post" action="/groups">
 <table>
-<tr><th>In scope</th><th>Group</th><th>Messages</th><th>Oldest message</th></tr>
+<tr><th>In scope</th><th>Chat</th><th>Type</th><th>Messages</th><th>Oldest message</th></tr>
 {% for g in groups %}
 <tr><td><input type="checkbox" name="scope" value="{{ g.jid }}" {% if g.in_scope %}checked{% endif %}></td>
-<td><a href="/groups/{{ g.jid }}">{{ g.name or g.jid }}</a></td><td>{{ g.n }}</td><td>{{ g.first_ts|ts }}</td></tr>
-{% else %}<tr><td colspan="4" class="muted">No groups yet — run step 1 on the pipeline page.</td></tr>{% endfor %}
+<td><a href="/groups/{{ g.jid }}">{{ g.name or g.jid }}</a></td><td>{{ g.jid|chat_kind }}</td><td>{{ g.n }}</td><td>{{ g.first_ts|ts }}</td></tr>
+{% else %}<tr><td colspan="5" class="muted">No chats yet — run step 1 on the pipeline page.</td></tr>{% endfor %}
 </table>
 <button>Save</button>
 </form>

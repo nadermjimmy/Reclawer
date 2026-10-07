@@ -1,11 +1,11 @@
 """Extract sourced project facts (location, service charge, handover, ...) from group messages and PDFs."""
 import json, time
-import db, llm
+import db, llm, rules
 
 FACT_TYPES = ["location", "service_charge", "payment_plan", "completion_rate", "amenities", "handover",
               "phase_status", "unit_status", "launch", "other"]
 
-SYSTEM = """You extract factual statements about UAE real-estate developer projects from WhatsApp messages
+SYSTEM = f"""You extract factual statements about {rules.MARKET_NAME} real-estate developer projects from WhatsApp messages
 (Arabic, English, Franco-Arabic) and brochure/PDF text.
 
 Rules:
@@ -13,10 +13,10 @@ Rules:
 - project_label: the project exactly as the text names it. If the text doesn't make the project clear from
   the message itself or the immediately surrounding messages in this batch, skip the statement.
 - phase_label: the phase/building/tower exactly as written, or "".
-- A location (e.g. "Dubai Hills") is a location fact, never a project_label by itself.
+- A location (city/district/area) is a location fact, never a project_label by itself.
 - Instructions like "No flip or change the unit" are restrictions: record them as fact_type "other".
 - raw_value: the exact words from the source (verbatim, original language).
-- parsed_value: a short clean reading of raw_value (e.g. "Q4 2027", "AED 20 per sq ft", "60/40",
+- parsed_value: a short clean reading of raw_value (e.g. "Q4 2027", "{rules.CURRENCY} 20 per {rules.METRIC_LABEL}", "60/40",
   "sold out"), or "" if it can't be read without guessing.
 - ambiguous: true if the statement is unclear, conditional, or could refer to another project/phase.
 - updates_previous: true only if the text explicitly corrects or updates an earlier statement.

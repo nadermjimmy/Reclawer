@@ -21,12 +21,23 @@ def unwrap(msg):
     return msg or {}
 
 
+def is_chat(jid):
+    """Groups and private chats; not status updates, broadcast lists or channels."""
+    return bool(jid) and jid.split("@")[-1] in ("g.us", "s.whatsapp.net", "lid") and jid != "status@broadcast"
+
+
+def chat_name(jid, name):
+    if name:
+        return name
+    return "+" + jid.split("@")[0] if jid.endswith("@s.whatsapp.net") else jid
+
+
 def parse_record(rec, origin):
     """Evolution message record (history or webhook data) -> source_messages row, or None."""
     key = rec.get("key") or {}
     jid = key.get("remoteJid") or ""
     wa_id = key.get("id")
-    if not jid.endswith("@g.us") or not wa_id:
+    if not is_chat(jid) or not wa_id:
         return None
     msg = unwrap(rec.get("message") or {})
     media_key = next((k for k in MEDIA_KINDS if k in msg), None)
@@ -61,23 +72,39 @@ def store_message(c, row):
 
 
 def sync_groups(log):
+    """List the instance's groups and private chats."""
     groups = evolution.fetch_groups()
+    try:
+        chats = evolution.find_chats()
+    except Exception as e:
+        chats = []
+        log(f"Private chats couldn't be listed ({e}); groups only.")
     with db.connect() as c:
         for g in groups:
-            if not g.get("id"):
+            if g.get("id"):
+                c.execute("INSERT OR REPLACE INTO groups VALUES(?,?)", (g["id"], g.get("subject")))
+                c.execute("INSERT OR IGNORE INTO group_scope(jid,in_scope) VALUES(?,0)", (g["id"],))
+        n_private = 0
+        for ch in chats:
+            jid = ch.get("remoteJid") or ch.get("id") or ""
+            if not is_chat(jid) or jid.endswith("@g.us"):
                 continue
-            c.execute("INSERT OR REPLACE INTO groups VALUES(?,?)", (g["id"], g.get("subject")))
-            c.execute("INSERT OR IGNORE INTO group_scope(jid,in_scope) VALUES(?,0)", (g["id"],))
+            n_private += 1
+            c.execute("INSERT INTO groups VALUES(?,?) ON CONFLICT(jid) DO UPDATE SET "
+                      "name=COALESCE(excluded.name, groups.name)",
+                      (jid, chat_name(jid, ch.get("pushName") or ch.get("name"))))
+            c.execute("INSERT OR IGNORE INTO group_scope(jid,in_scope) VALUES(?,0)", (jid,))
         c.execute("UPDATE messages SET group_name=(SELECT name FROM groups WHERE jid=group_jid) "
                   "WHERE group_name IS NULL")
-    log(f"{len(groups)} groups found. Mark the UAE inventory group(s) on the Groups page.")
+    log(f"{len(groups)} groups and {n_private} private chats found. Tick the inventory chat(s) on the Chats page.")
 
 
-def pull_history(log, only_scoped=False):
+def pull_history(log, only_scoped=True):
+    """Copy stored history for the ticked chats (new messages arrive through the webhook)."""
     with db.connect() as c:
         jids = db.scoped_groups(c) if only_scoped else [r[0] for r in c.execute("SELECT jid FROM groups")]
     if not jids:
-        log("No groups yet - run 'Sync groups' first.")
+        log("No chats ticked yet - run 'Sync chats', then tick the inventory chat(s) on the Chats page.")
         return
     for jid in jids:
         new = seen = 0
@@ -133,7 +160,7 @@ def download_media(log, retry_failed=False):
     with db.connect() as c:
         scoped = db.scoped_groups(c)
         if not scoped:
-            log("No in-scope groups. Mark the UAE inventory group(s) on the Groups page first.")
+            log("No chats ticked. Tick the inventory chat(s) on the Chats page first.")
             return
         q = ("SELECT wa_id, message_type, file_name, mimetype FROM source_messages m WHERE has_media=1 "
              f"AND group_jid IN ({','.join('?' * len(scoped))}) "

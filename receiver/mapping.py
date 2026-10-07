@@ -2,38 +2,38 @@
 import json, time
 import db, llm, rows, rules
 
-SYSTEM = f"""You map rows of real-estate availability workbooks, shared in a UAE brokers' WhatsApp group,
-to a developer -> parent project -> phase/building/tower hierarchy.
+SYSTEM = f"""You map rows of real-estate availability workbooks, shared in WhatsApp chats about the
+{rules.MARKET_NAME} market, to a developer -> parent project -> phase/building/tower hierarchy.
 
 Use ONLY the evidence given (file name, sheet name, section titles, cell labels, the WhatsApp messages around
 the file). Never use outside knowledge, websites or guesses to name a project, developer or location.
 
 Owner rules (mandatory):
-- A location is not a project. "Dubai Hills" is a location; never output it as a project name.
+- A location (city, district, area) is not a project; never output one as a project name.
 - Instructions such as "No Flip or Change the Unit" are not projects; they are restrictions.
 - Towers, phases, buildings, blocks and clusters are children of a parent project, never projects themselves.
   Put the child label (exactly as written in the source) in phase_label.
-- Brabus is ONE parent project; its towers (e.g. Tower 1, Tower 2) are phases under it.
-- Verdana is ONE parent project with six phases. Keep the source phase label exactly; never renumber.
 - A worksheet tab name, availability status, campaign title or price-list title is not a project by itself.
 - Reuse an existing canonical project name from the list provided when the evidence refers to the same project.
-- Scope is the UAE. If the evidence shows the material is about Egypt or elsewhere, set is_uae to "no".
-  If unclear, "uncertain".
+{rules.prompt_rules()}
+- Scope is {rules.MARKET_NAME}. If the evidence shows the material is about another country, set in_market to
+  "no". If unclear, "uncertain".
 
 decision values:
 - "project": the evidence names the parent project clearly (give project_name; phase_label may be "").
 - "unresolved": the parent project can't be established from the evidence.
-- "exclude_scope": the material is clearly outside the UAE.
+- "exclude_scope": the material is clearly outside {rules.MARKET_NAME}.
 confidence: "high" only when the evidence explicitly names the project for these rows; otherwise "medium" or "low".
 Use "" for unknown developer/phase. rationale: one or two sentences quoting the evidence used.
-Owner rules file for reference: {json.dumps({k: v for k, v in rules.RULES.items() if not k.startswith('_')})}"""
+Owner rules file for reference: {json.dumps({k: v for k, v in rules.RULES.items() if not k.startswith('_')},
+                                             ensure_ascii=False)}"""
 
 SCHEMA = llm.obj({"mappings": {"type": "array", "items": llm.obj({
     "key": llm.STR,
     "decision": {"type": "string", "enum": ["project", "unresolved", "exclude_scope"]},
     "developer": llm.STR, "project_name": llm.STR, "phase_label": llm.STR,
     "confidence": {"type": "string", "enum": ["high", "medium", "low"]},
-    "is_uae": {"type": "string", "enum": ["yes", "no", "uncertain"]},
+    "in_market": {"type": "string", "enum": ["yes", "no", "uncertain"]},
     "rationale": llm.STR})}})
 
 
@@ -106,7 +106,7 @@ def propose(log, redo=False, batch=8):
                     continue
                 c.execute("INSERT OR REPLACE INTO label_mappings VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                           (m["key"], m["decision"], m["developer"], m["project_name"].strip(),
-                           m["phase_label"].strip(), m["confidence"], m["rationale"], m["is_uae"],
+                           m["phase_label"].strip(), m["confidence"], m["rationale"], m["in_market"],
                            "claude", "proposed", int(time.time())))
                 if m["decision"] == "project" and m["project_name"] and m["project_name"] not in known:
                     known.append(m["project_name"])
