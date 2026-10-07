@@ -7,21 +7,23 @@ KEY = os.getenv("EVOLUTION_API_KEY", "")
 INSTANCE = os.getenv("EVOLUTION_INSTANCE", "byit-ops")
 
 
-def _client():
+def _client(timeout=120):
     if not URL or not KEY:
         raise RuntimeError("EVOLUTION_URL and EVOLUTION_API_KEY must be set on the receiver service")
-    return httpx.Client(base_url=URL, headers={"apikey": KEY}, timeout=120)
+    return httpx.Client(base_url=URL, headers={"apikey": KEY}, timeout=timeout)
 
 
 def fetch_groups():
-    with _client() as h:
+    """Live group list from WhatsApp (names included). Can be very slow right after linking a number."""
+    with _client(timeout=45) as h:
         r = h.get(f"/group/fetchAllGroups/{INSTANCE}", params={"getParticipants": "false"})
         r.raise_for_status()
         return r.json()
 
 
 def find_chats():
-    with _client() as h:
+    """Chats Evolution has stored (groups and private), from its own database - fast."""
+    with _client(timeout=90) as h:
         r = h.post(f"/chat/findChats/{INSTANCE}", json={})
         r.raise_for_status()
         body = r.json()

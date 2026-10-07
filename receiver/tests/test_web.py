@@ -66,6 +66,19 @@ def test_private_chats_and_instance_filter(client):
         assert not c.execute("SELECT 1 FROM source_messages WHERE wa_id='x9'").fetchone()
 
 
+def test_sync_survives_slow_group_call(client):
+    import db, evolution, history, jobs, fixtures
+    def slow():
+        raise TimeoutError("The read operation timed out")
+    evolution.fetch_groups = slow
+    jobs.run_now("sync", history.sync_groups)
+    with db.connect() as c:
+        log = c.execute("SELECT log FROM jobs ORDER BY id DESC LIMIT 1").fetchone()[0]
+        assert c.execute("SELECT name FROM groups WHERE jid='201000000000@s.whatsapp.net'").fetchone()[0] == "Nada"
+    assert "1 groups and 1 private chats found" in log and "live group names" in log
+    evolution.fetch_groups = fixtures.FakeEvolution().fetch_groups
+
+
 def test_reset_last(client):
     import db
     assert client.post("/reset", data={"confirm": "nope"}, follow_redirects=False).headers["location"] == "/?reset=refused"

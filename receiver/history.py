@@ -72,31 +72,46 @@ def store_message(c, row):
 
 
 def sync_groups(log):
-    """List the instance's groups and private chats."""
-    groups = evolution.fetch_groups()
+    """List the instance's chats: Evolution's stored chat list first, then live group names if WhatsApp answers."""
+    errors = []
     try:
         chats = evolution.find_chats()
     except Exception as e:
         chats = []
-        log(f"Private chats couldn't be listed ({e}); groups only.")
+        errors.append(f"stored chat list: {e}")
+    try:
+        groups = evolution.fetch_groups()
+    except Exception as e:
+        groups = []
+        errors.append(f"live group names: {e}")
+    if not chats and not groups:
+        raise RuntimeError("Evolution returned no chats (" + "; ".join(errors) + "). If the number was linked "
+                           "recently, wait a few minutes for WhatsApp to finish syncing and run this again.")
+    n_groups = n_private = 0
     with db.connect() as c:
-        for g in groups:
-            if g.get("id"):
-                c.execute("INSERT OR REPLACE INTO groups VALUES(?,?)", (g["id"], g.get("subject")))
-                c.execute("INSERT OR IGNORE INTO group_scope(jid,in_scope) VALUES(?,0)", (g["id"],))
-        n_private = 0
         for ch in chats:
             jid = ch.get("remoteJid") or ch.get("id") or ""
-            if not is_chat(jid) or jid.endswith("@g.us"):
+            if not is_chat(jid):
                 continue
-            n_private += 1
+            if jid.endswith("@g.us"):
+                n_groups += 1
+            else:
+                n_private += 1
+            name = ch.get("name") or ch.get("subject") or ch.get("pushName")
             c.execute("INSERT INTO groups VALUES(?,?) ON CONFLICT(jid) DO UPDATE SET "
-                      "name=COALESCE(excluded.name, groups.name)",
-                      (jid, chat_name(jid, ch.get("pushName") or ch.get("name"))))
+                      "name=COALESCE(excluded.name, groups.name)", (jid, chat_name(jid, name)))
             c.execute("INSERT OR IGNORE INTO group_scope(jid,in_scope) VALUES(?,0)", (jid,))
+        for g in groups:  # live subjects win for groups
+            if g.get("id"):
+                if not c.execute("SELECT 1 FROM groups WHERE jid=?", (g["id"],)).fetchone():
+                    n_groups += 1
+                c.execute("INSERT OR REPLACE INTO groups VALUES(?,?)", (g["id"], g.get("subject") or g["id"]))
+                c.execute("INSERT OR IGNORE INTO group_scope(jid,in_scope) VALUES(?,0)", (g["id"],))
         c.execute("UPDATE messages SET group_name=(SELECT name FROM groups WHERE jid=group_jid) "
                   "WHERE group_name IS NULL")
-    log(f"{len(groups)} groups and {n_private} private chats found. Tick the inventory chat(s) on the Chats page.")
+    for e in errors:
+        log(f"Note - couldn't get {e}")
+    log(f"{n_groups} groups and {n_private} private chats found. Tick the inventory chat(s) on the Chats page.")
 
 
 def pull_history(log, only_scoped=True):

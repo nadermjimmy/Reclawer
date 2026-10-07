@@ -64,7 +64,7 @@ class FakeEvolution:
 
     def find_chats(self):
         return [{"remoteJid": "201000000000@s.whatsapp.net", "pushName": "Nada"},
-                {"remoteJid": UAE}, {"remoteJid": "status@broadcast"}]
+                {"remoteJid": UAE}, {"remoteJid": "status@broadcast"}]  # stored list: UAE group has no name
 
     def find_messages(self, jid, page, page_size=100):
         return HISTORY.get(jid, []), 1
