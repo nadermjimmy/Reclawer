@@ -6,7 +6,7 @@ Unauthenticated /api/* calls get 401 {"error": "login"} from web.auth_middleware
 import datetime, json, os, re, time
 from fastapi import APIRouter, File, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
-import build, chat_sync, db, feed, history, jobs, master, master_export, master_schema as ms, parse_files, proposals, \
+import brain, build, cell_parse as cp, chat_sync, db, feed, history, jobs, master, master_export, master_schema as ms, parse_files, proposals, \
     rules, search, web
 
 router = APIRouter(prefix="/api")
@@ -94,9 +94,12 @@ CHAT_SQL = ("(CASE WHEN p.source_kind='message' THEN (SELECT sm.group_jid FROM s
             "WHERE sr.id=CAST(p.source_ref AS INTEGER) ORDER BY sm.ts DESC LIMIT 1) END)")
 FILE_SQL = ("(CASE WHEN p.source_kind='message' THEN NULL ELSE (SELECT sf.file_name FROM source_rows sr "
             "JOIN source_files sf ON sf.id=sr.file_id WHERE sr.id=CAST(p.source_ref AS INTEGER)) END)")
-PROPOSAL_SQL = (f"SELECT x.*, g.name chat_name FROM (SELECT p.*, r.project row_project, r.developer row_developer, "
+PROPOSAL_SQL = (f"SELECT x.*, g.name chat_name, b.verdict brain_verdict, b.confidence brain_confidence, "
+                f"b.reason brain_reason, b.action brain_action FROM (SELECT p.*, r.project row_project, "
+                f"r.developer row_developer, "
                 f"r.row_number, {CHAT_SQL} chat_jid, {FILE_SQL} source_file FROM proposals p "
-                f"LEFT JOIN master_rows r ON r.id=p.row_id) x LEFT JOIN groups g ON g.jid=x.chat_jid")
+                f"LEFT JOIN master_rows r ON r.id=p.row_id) x LEFT JOIN groups g ON g.jid=x.chat_jid "
+                f"LEFT JOIN brain_reviews b ON b.proposal_id=x.id")
 
 
 def field_label(field):
@@ -136,6 +139,9 @@ def item(p):
         "warnings": [{"code": code, "text": text} for code, text in warns],
         "warning_codes": [code for code, _ in warns],
         "created_at": p["created_at"], "decided_at": p["decided_at"],
+        "decided_by": p["decided_by"] if "decided_by" in p.keys() else None,
+        "brain": ({"verdict": p["brain_verdict"], "confidence": p["brain_confidence"], "reason": p["brain_reason"],
+                   "action": p["brain_action"]} if "brain_verdict" in p.keys() and p["brain_verdict"] else None),
     }
 
 
@@ -183,6 +189,109 @@ def list_proposals(state: str = "proposed", sheet: str = "", match: str = "", q:
     return {"items": page, "total": len(found), "counts": counts, "warning_counts": warning_counts,
             "next_cursor": str(start + limit) if start + limit < len(found) else None, "has_master": has_master,
             "sheets": list(ms.SHEETS)}
+
+
+# ---------- sheet view: the master as a grid, with approved changes and open suggestions overlaid ----------
+@router.get("/sheet")
+def sheet_view(sheet: str = "", view: str = "all", q: str = "", offset: int = 0, limit: int = 300):
+    """view: all | changed (rows with an approved change or an open suggestion) | pending | approved."""
+    with db.connect() as c:
+        imp = master.current_import(c)
+        if not imp:
+            return err("no_master", 409, "Upload the master workbook first")
+        sheets = {r["sheet"]: json.loads(r["columns_json"]) for r in c.execute(
+            "SELECT sheet, columns_json FROM master_sheets WHERE import_id=?", (imp["id"],))}
+        sheet = sheet if sheet in sheets else next((s for s in ms.SHEETS if s in sheets), "")
+        cols = sorted(sheets.get(sheet, {}).items(), key=lambda kv: kv[1])
+        columns = [{"field": f, "label": {"developer": "Developer", "project": "Project"}.get(f, field_label(f)),
+                    "col": n, "proposable": f in ms.ALL_PROPOSABLE and f not in ms.NEVER} for f, n in cols]
+        all_rows = [r for r in c.execute("SELECT * FROM master_rows WHERE state<>'dropped' ORDER BY "
+                                         "COALESCE(row_number, 1e9), id").fetchall() if master.home_sheet(r) == sheet]
+        ids = [r["id"] for r in all_rows]
+        cells, approved, pending = {}, {}, {}
+        if ids:
+            marks = ",".join("?" * len(ids))
+            for m in c.execute(f"SELECT row_id, field, raw_text FROM master_cells WHERE row_id IN ({marks})", ids):
+                cells[(m["row_id"], m["field"])] = m["raw_text"]
+            q_sql = (f"SELECT p.*, {CHAT_SQL} chat_jid, b.reason brain_reason, b.verdict brain_verdict "
+                     f"FROM proposals p LEFT JOIN brain_reviews b ON b.proposal_id=p.id ")
+            for p in c.execute(q_sql + f"WHERE p.state='approved' AND p.row_id IN ({marks}) ORDER BY p.decided_at, p.id",
+                               ids):
+                approved[(p["row_id"], p["field"])] = p  # latest wins
+            for p in c.execute(q_sql + f"WHERE p.state='proposed' AND p.row_id IN ({marks}) "
+                                       "ORDER BY COALESCE(p.source_ts,0), p.id", ids):
+                pending.setdefault((p["row_id"], p["field"]), []).append(p)
+            names = {r["jid"]: r["name"] for r in c.execute("SELECT jid, name FROM groups")}
+        else:
+            names = {}
+
+        def change(p, kind, count=1):
+            return {"kind": kind, "proposal_id": p["id"], "old_raw": p["old_raw"] or "", "new_raw": p["new_raw"] or "",
+                    "decided_by": p["decided_by"], "decided_at": p["decided_at"], "quote": (p["quote"] or "")[:300],
+                    "source_kind": p["source_kind"], "source_ts": p["source_ts"],
+                    "chat_name": names.get(p["chat_jid"], p["chat_jid"] or ""), "chat_jid": p["chat_jid"],
+                    "brain_reason": p["brain_reason"], "brain_verdict": p["brain_verdict"],
+                    "warning": p["warning"] or "", "count": count, "row_new": p["row_id"] is None}
+
+        out_rows = []
+        for r in all_rows:
+            row = {"row_id": r["id"], "row_number": r["row_number"], "state": r["state"], "cells": {}, "changes": 0,
+                   "pending": 0}
+            for f, _ in cols:
+                master_raw = r[f] if f in ("developer", "project") else cells.get((r["id"], f), "")
+                cell = {"master": master_raw or ""}
+                a, pend = approved.get((r["id"], f)), pending.get((r["id"], f))
+                if a:
+                    cell["approved"] = change(a, "approved")
+                    row["changes"] += 1
+                if pend:
+                    cell["pending"] = change(pend[-1], "pending", len(pend))
+                    row["pending"] += 1
+                row["cells"][f] = cell
+            out_rows.append(row)
+        # suggested new rows (no sheet row yet) for this sheet
+        new_rows = {}
+        for p in c.execute(f"SELECT p.*, {CHAT_SQL} chat_jid, b.reason brain_reason, b.verdict brain_verdict "
+                           "FROM proposals p LEFT JOIN brain_reviews b ON b.proposal_id=p.id "
+                           "WHERE p.state='proposed' AND p.row_id IS NULL AND p.sheet=? ORDER BY p.id", (sheet,)):
+            nr = new_rows.setdefault(p["project_key"], {
+                "row_id": None, "row_number": None, "state": "suggested_new", "changes": 0, "pending": 0,
+                "cells": {f: {"master": ""} for f, _ in cols}})
+            nr["cells"].setdefault("project", {"master": ""})["master"] = p["project"]
+            if "developer" in nr["cells"] and p["developer"]:
+                nr["cells"]["developer"]["master"] = p["developer"]
+            if p["field"] in nr["cells"]:
+                nr["cells"][p["field"]]["pending"] = change(p, "pending")
+                nr["pending"] += 1
+        out_rows += list(new_rows.values())
+
+    counts = {"rows": len(out_rows), "changed": sum(1 for r in out_rows if r["changes"] or r["pending"]),
+              "approved_cells": sum(r["changes"] for r in out_rows), "pending_cells": sum(r["pending"] for r in out_rows),
+              "suggested_new_rows": len(new_rows)}
+    if view == "changed":
+        out_rows = [r for r in out_rows if r["changes"] or r["pending"]]
+    elif view == "pending":
+        out_rows = [r for r in out_rows if r["pending"]]
+    elif view == "approved":
+        out_rows = [r for r in out_rows if r["changes"]]
+    if q.strip():
+        key = cp.normalize_project_key(q)
+        out_rows = [r for r in out_rows if key in cp.normalize_project_key(
+            (r["cells"].get("project", {}).get("master") or "") + (r["cells"].get("developer", {}).get("master") or ""))]
+    total = len(out_rows)
+    limit = max(1, min(limit, 1000))
+    return {"sheet": sheet, "sheets": [s for s in ms.SHEETS if s in sheets], "columns": columns, "counts": counts,
+            "total": total, "offset": offset, "rows": out_rows[offset:offset + limit],
+            "next_offset": offset + limit if offset + limit < total else None}
+
+
+@router.post("/proposals/{pid}/reopen")
+def reopen_proposal(pid: int):
+    """Undo a brain decision (approved or rejected by the brain): back on Updates."""
+    if not brain.reopen(pid):
+        return err("not_reopenable", 422, "Only suggestions the brain decided can be reopened")
+    with db.connect() as c:
+        return {"ok": True, "counts": state_counts(c)}
 
 
 @router.post("/proposals/decide")
@@ -388,6 +497,7 @@ def chat_routine(log, mode="batch"):
         for st in ("sheets", "pdfs", "images"):
             n, f = proposals.run_stage_live(log, st)
             log(f"{st.capitalize()}: {n} suggestion(s), {f} failed request(s)")
+        brain.review(log)
     elif has_master:
         log("File suggestions follow automatically after the text batch: they arrive on the Updates page")
     log("PROGRESS " + json.dumps({"stage": "Finished", "done": len(stages), "total": len(stages)}))

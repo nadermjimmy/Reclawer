@@ -606,3 +606,67 @@ mark {
   background: var(--grey-100, #F3F2F1);
   object-fit: contain;
 }
+
+/* brain notes */
+.qbrain {
+  flex-basis: 100%;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  font-size: var(--fs-caption, 12px);
+  color: var(--navy-600, #2E468A);
+}
+.qbrain svg {
+  flex: none;
+  align-self: center;
+  color: var(--orange-600, #DB8127);
+}
+.qbrain-who {
+  flex: none;
+  font-weight: 700;
+}
+.qbrain-reason {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.qbrain-noise .qbrain-who,
+.qbrain-unsure .qbrain-who {
+  color: var(--grey-600, #6D6D6D);
+}
+.link-btn {
+  border: 0;
+  background: none;
+  padding: 0 6px;
+  color: var(--orange-700, #B5681A);
+  font: inherit;
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+.link-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.brain-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  padding: 10px 14px;
+  margin-bottom: 12px;
+  border-radius: 14px;
+  background: var(--orange-100, rgba(219, 129, 39, 0.08));
+  color: var(--navy-700, #23376F);
+}
+.brain-bar svg {
+  color: var(--orange-600, #DB8127);
+}
+.brain-bar .small {
+  flex: 1 1 280px;
+  min-width: 0;
+}
+.brain-note { margin: 0; font-size: var(--fs-small, 14px); }

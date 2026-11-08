@@ -4,7 +4,7 @@ import datetime, hashlib, hmac, os, time
 from urllib.parse import urlencode
 from fastapi import APIRouter, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
-import build, db, facts, history, mapping, media_review, parse_files, proposals, rules
+import brain, build, db, facts, history, mapping, media_review, parse_files, proposals, rules
 
 PASSWORD = os.getenv("APP_PASSWORD", "")
 SECRET = (os.getenv("SESSION_SECRET") or PASSWORD or "unset").encode()
@@ -71,6 +71,9 @@ STEPS = [
     ("propose_updates", "6b. Propose sheet updates (Claude)", "Read every group's text messages first, then "
      "spreadsheets, PDFs and images for what's still missing; sent through the batch queue at half price, results "
      "arrive on the Updates page as each stage finishes.", proposals.propose),
+    ("brain_review", "6c. Brain review (Claude)", "Second look at open suggestions: moves false new rows onto "
+     "existing rows, approves safe updates (existing row, sheet format, price within ±20%, no Hold/Hide, never "
+     "commission) and rejects clear noise. Runs after every sync; run it here for the backlog.", brain.review),
     ("classify_images", "7. Review images (Claude)", "Propose what each image shows (shown only after you approve).",
      media_review.classify),
     ("build", "8. Build inventory", "Rebuild projects, phases, units and the review queue.", build.rebuild),

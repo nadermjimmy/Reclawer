@@ -25,9 +25,18 @@ export interface ProposalSource {
   file_name: string | null;
 }
 
+export interface BrainNote {
+  verdict: "update_existing" | "new_project" | "noise" | "unsure";
+  confidence: "high" | "medium" | "low";
+  reason: string;
+  action: string;
+}
+
 export interface Proposal {
   id: number;
   state: ProposalState;
+  decided_by?: string | null;
+  brain?: BrainNote | null;
   sheet: string;
   row_id: number | null;
   row_number: number | null;
@@ -136,5 +145,9 @@ export type DecideAction = "approve" | "reject";
 
 export const listProposals = (f: ProposalFilters) => get<ProposalList>("/proposals", { ...f });
 export const getProposal = (id: number) => get<ProposalDetail>(`/proposals/${id}`);
+/** Undo a decision the brain made (approved or rejected): back on the open list. */
+export const reopen = (id: number) => post<{ ok: true }>(`/proposals/${id}/reopen`, {});
+export const BRAIN_CHANGED = "brain:changed";
+
 export const decide = (ids: number[], action: DecideAction, sheetById?: Record<number, string>) =>
   post<DecideResult>("/proposals/decide", { ids, action, sheet_by_id: sheetById ?? {} });

@@ -374,6 +374,11 @@ def _advance(run_id):
                     failed_keys.update(json.loads(r[0]))  # don't retry a failed request within the same run
                 units = BUILDERS[stage](c, None, _skip_keys(c, failed_keys))
         if done:
+            try:
+                import brain
+                brain.review(log)  # second look at everything this run suggested
+            except Exception as e:
+                log(f"Brain review failed: {e}")
             log(f"Finished: {totals.get('suggestions', 0)} suggestion(s), {totals.get('failed', 0)} failed request(s)")
             log("RESULT " + json.dumps(totals))
             return

@@ -1,9 +1,10 @@
 import { AnimatePresence, motion } from "framer-motion";
-import { Check, CircleCheck, FileSpreadsheet, Filter, RefreshCw, X } from "lucide-react";
+import { Check, CircleCheck, FileSpreadsheet, Filter, RefreshCw, Sparkles, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useJobs } from "../../app/jobs";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { errorText } from "../../api/client";
-import { getProposal, listProposals, type Proposal, type ProposalDetail, type ProposalList, type ProposalState } from "../../api/proposals";
+import { BRAIN_CHANGED, getProposal, listProposals, type Proposal, type ProposalDetail, type ProposalList, type ProposalState } from "../../api/proposals";
 import { useSession } from "../../app/session";
 import { usePageTitle } from "../../app/title";
 import {
@@ -42,6 +43,7 @@ interface BulkConfirm {
 }
 
 export function UpdatesScreen() {
+  const { startStep } = useJobs();
   usePageTitle("Updates");
   const { me } = useSession();
   const toast = useToast();
@@ -102,6 +104,11 @@ export function UpdatesScreen() {
   }, [filterKey]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     void load();
+  }, [load]);
+  useEffect(() => {  // a brain decision was reopened from the list
+    const on = () => void load();
+    window.addEventListener(BRAIN_CHANGED, on);
+    return () => window.removeEventListener(BRAIN_CHANGED, on);
   }, [load]);
   const loadMore = async () => {
     if (!list?.next_cursor) return;
@@ -410,6 +417,14 @@ export function UpdatesScreen() {
         </InfoBanner>
       )}
       {error && list && <ErrorBanner onRetry={() => void load()}>Couldn't refresh suggestions. Showing the last list.</ErrorBanner>}
+      {filters.state === "proposed" && items.length > 0 && (
+        <div className="brain-bar">
+          <Sparkles size={15} aria-hidden="true" />
+          <span className="small">The brain checks every sync: it moves false new rows onto existing rows, approves safe
+            updates and rejects clear noise. What's left here needs you.</span>
+          <Button size="sm" variant="secondary" onClick={() => void startStep("brain_review")}>Review Backlog Now</Button>
+        </div>
+      )}
       {body}
       {!wide && (
         <Drawer open={detailOpen && Boolean(focused)} onClose={() => setDetailOpen(false)}

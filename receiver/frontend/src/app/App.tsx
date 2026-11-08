@@ -3,6 +3,7 @@ import { BrowserRouter, Navigate, Route, Routes, useLocation, useParams, useSear
 import { ToastProvider } from "../components";
 import { InventoryScreen, ProjectScreen } from "../features/inventory/InventoryScreen";
 import { LoginScreen } from "../features/login/LoginScreen";
+import { SheetScreen } from "../features/sheet/SheetScreen";
 import { MasterScreen } from "../features/master/MasterScreen";
 import { MoreScreen } from "../features/more/MoreScreen";
 import { ChatsScreen } from "../features/chats/ChatsScreen";
@@ -68,6 +69,7 @@ function Gate() {
         <Route element={<Shell />}>
           <Route index element={<Navigate to="/updates" replace />} />
           <Route path="updates" element={<UpdatesScreen />} />
+          <Route path="sheet" element={<SheetScreen />} />
           <Route path="chats" element={<ChatsScreen />} />
           <Route path="chats/:jid" element={<ChatsScreen />} />
           <Route path="insights" element={<InsightsScreen />} />

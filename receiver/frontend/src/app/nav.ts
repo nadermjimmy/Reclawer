@@ -1,4 +1,4 @@
-import { Boxes, ChartColumn, ClipboardCheck, FileSpreadsheet, FolderOpen, Inbox, MessagesSquare, Workflow, type LucideIcon } from "lucide-react";
+import { Boxes, ChartColumn, ClipboardCheck, FileSpreadsheet, FolderOpen, Inbox, MessagesSquare, Sheet, Workflow, type LucideIcon } from "lucide-react";
 import type { ShellCounts } from "../api/session";
 
 export interface NavItem {
@@ -7,11 +7,14 @@ export interface NavItem {
   icon: LucideIcon;
   /** Which /api/me count shows as a badge. */
   badge?: keyof ShellCounts;
+  /** Rail only: on phones it's listed under More, so the bottom bar keeps five tabs. */
+  railOnly?: boolean;
 }
 
 /** Primary destinations (rail on desktop, bottom tabs on phone). Part 2 owns Chats and Insights. */
 export const PRIMARY_NAV: NavItem[] = [
   { to: "/updates", label: "Updates", icon: Inbox, badge: "open_suggestions" },
+  { to: "/sheet", label: "Sheet", icon: Sheet, railOnly: true },
   { to: "/chats", label: "Chats", icon: MessagesSquare, badge: "chats_with_suggestions" },
   { to: "/insights", label: "Insights", icon: ChartColumn },
   { to: "/master", label: "Master", icon: FileSpreadsheet, badge: "rows_to_place" },

@@ -96,7 +96,7 @@ export function Shell() {
         </main>
       </div>
       <nav className="tabbar" aria-label="Main">
-        {PRIMARY_NAV.map((i) => <TabLink key={i.to} item={i} />)}
+        {PRIMARY_NAV.filter((i) => !i.railOnly).map((i) => <TabLink key={i.to} item={i} />)}
         <NavLink to="/more" className={`tab-link${moreActive ? " is-active" : ""}`}>
           <span className="tab-icon">
             <Ellipsis size={22} aria-hidden="true" />
