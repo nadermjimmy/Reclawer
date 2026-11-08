@@ -271,6 +271,13 @@ def _done(keys):
 
 # ---------- live ----------
 LIVE_WORKERS = int(os.getenv("CLAUDE_WORKERS", "6"))
+KEY_HELP = ("Claude rejected the API key (401). Set a valid ANTHROPIC_API_KEY on the receiver service in Railway "
+            "(Variables), redeploy, then sync again. Messages and files are still pulled and downloaded.")
+
+
+def _key_rejected(e):
+    import anthropic
+    return isinstance(e, (anthropic.AuthenticationError, anthropic.PermissionDeniedError))
 
 
 def run_stage_live(log, stage, jids=None):
@@ -295,6 +302,11 @@ def run_stage_live(log, stage, jids=None):
             try:
                 out = f.result()
             except Exception as e:
+                if _key_rejected(e):  # every other request would fail the same way: stop this stage
+                    for other in futures:
+                        other.cancel()
+                    log(KEY_HELP)
+                    return written, failed + 1
                 log(f"{u['label']} failed: {e}")
                 failed += 1
                 continue
@@ -461,7 +473,13 @@ def start_batched(log):
                            "VALUES(?,0,'running',?,?,'{}')", (log.job_id, int(time.time()), int(time.time()))).lastrowid
     log("Reading order: text messages, then spreadsheets, PDFs and images (each fills only what's still missing). "
         "Sent through the batch queue at half price.")
-    _advance(run_id)
+    try:
+        _advance(run_id)
+    except Exception as e:  # don't stop the rest of the sync (downloads) because Claude can't be reached
+        with db.connect() as c:
+            _set_run(c, run_id, status="failed")
+        log(KEY_HELP if _key_rejected(e) else f"Couldn't send the batch to Claude: {e}")
+        return
     with db.connect() as c:
         if c.execute("SELECT status FROM ingest_runs WHERE id=?", (run_id,)).fetchone()[0] != "done":
             jobs.keep_open(log.job_id)  # the job row stays 'waiting' until the last stage's results are in

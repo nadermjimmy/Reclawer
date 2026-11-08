@@ -184,3 +184,40 @@ def test_groups_are_read_by_default():
         c.execute("DELETE FROM group_scope WHERE jid IN ('901@g.us','201999@s.whatsapp.net')")
         c.execute("DELETE FROM groups WHERE jid IN ('901@g.us','201999@s.whatsapp.net')")
     assert scope == {"901@g.us": 1, "201999@s.whatsapp.net": 0}
+
+
+def _auth_error():
+    import anthropic
+    try:
+        import httpx2 as httpx
+    except ImportError:
+        import httpx
+    return anthropic.AuthenticationError("invalid x-api-key", body=None, response=httpx.Response(
+        401, request=httpx.Request("POST", "https://api.anthropic.com/v1/messages")))
+
+
+def test_rejected_key_does_not_stop_the_sync(env, monkeypatch):
+    db, master = env
+    import llm, proposals, jobs
+
+    def reject(*a, **k):
+        raise _auth_error()
+    lines = []
+    log = type("L", (), {"job_id": None, "__call__": lambda self, x: lines.append(str(x))})()
+    with db.connect() as c:
+        c.execute("DELETE FROM processed_batches WHERE batch_key LIKE 'u:ro%'")
+        c.execute("DELETE FROM ingest_runs")
+    monkeypatch.setattr(llm, "batch_submit", reject)
+    proposals.start_batched(log)  # must return, not raise
+    assert any("ANTHROPIC_API_KEY" in l for l in lines)
+    with db.connect() as c:
+        assert c.execute("SELECT status FROM ingest_runs ORDER BY id DESC").fetchone()[0] == "failed"
+    calls = []
+
+    def reject_live(*a, **k):
+        calls.append(1)
+        raise _auth_error()
+    monkeypatch.setattr(llm, "call_json", reject_live)
+    lines.clear()
+    written, failed = proposals.run_stage_live(log, "text", jids=[CHAT])
+    assert written == 0 and failed == 1 and sum("ANTHROPIC_API_KEY" in l for l in lines) == 1
