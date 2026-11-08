@@ -8,7 +8,7 @@ sends anything to WhatsApp.
 import json, time
 import db, history, master, parse_files, proposals
 
-STAGES = ("Pull latest messages", "Download files", "Read files", "Suggest updates")
+STAGES = ("Pull latest messages", "Suggest from text", "Download files", "Suggest from files")
 
 
 def _progress(log, n, **extra):
@@ -42,23 +42,30 @@ def sync_chat(log, jid, add_to_scope=False):
         log("RESULT " + json.dumps(result))
         raise
 
-    _progress(log, 2)
-    result["files"], result["files_failed"] = history.download_media(log, jids=[jid])
-
-    _progress(log, 3)
-    parse_files.parse_all(log)  # only files still pending
-
-    _progress(log, 4)
     with db.connect() as c:
         has_master = master.current_import(c) is not None
     if not has_master:
         log("Skipped suggestions: upload the master workbook on the Master page to get suggestions")
         result["skipped"] = "no_master"
-    else:
-        # same reading order as the full run (text, spreadsheets, PDFs, images), answered live for this chat
-        n, failed = proposals.run_live(log, jids=[jid])
+
+    # text first: suggestions from the messages appear before any attachment is downloaded
+    _progress(log, 2)
+    if has_master:
+        n, failed = proposals.run_stage_live(log, "text", jids=[jid])
         result["suggestions"] += n
         result["failed_batches"] += failed
+
+    _progress(log, 3)
+    result["files"], result["files_failed"] = history.download_media(log, jids=[jid])
+    parse_files.parse_all(log)  # only files still pending
+
+    # then spreadsheets, PDFs and images, each filling only what the text didn't
+    _progress(log, 4)
+    if has_master:
+        for stage in ("sheets", "pdfs", "images"):
+            n, failed = proposals.run_stage_live(log, stage, jids=[jid])
+            result["suggestions"] += n
+            result["failed_batches"] += failed
     log("PROGRESS " + json.dumps({"stage": len(STAGES) + 1, "of": len(STAGES), "label": "Finished",
                                   "done": len(STAGES), "total": len(STAGES)}))
     finish()

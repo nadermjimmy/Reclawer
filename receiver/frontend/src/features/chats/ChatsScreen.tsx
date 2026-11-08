@@ -14,6 +14,7 @@ import { Drawer, EmptyState, KeyboardHelp, useToast, type ShortcutGroup } from "
 import { useHotkeys, useLoad, useMediaQuery } from "../../lib/hooks";
 import { drawer as drawerMotion } from "../../motion";
 import { Avatar, ChatList } from "./ChatList";
+import { useJobs } from "../../app/jobs";
 import { Conversation, type ConversationHandle } from "./Conversation";
 import { SuggestionsPanel, useChatSuggestions } from "./SuggestionsPanel";
 import { useChatSync } from "./useChatSync";
@@ -38,6 +39,7 @@ function readPanelPref() {
 /** WhatsApp-Web-style Chats: list | conversation | suggestions from this chat (desktop). Tablet: the panel is a
     slide-over. Phone: list → conversation → suggestions push, like WhatsApp mobile. */
 export function ChatsScreen() {
+  const { startStep } = useJobs();
   const { jid: jidParam } = useParams();
   const jid = jidParam ?? null;
   const [params, setParams] = useSearchParams();
@@ -222,7 +224,8 @@ export function ChatsScreen() {
   const listPane = (
     <ChatList chats={chats.data?.chats} loading={chats.loading} error={chats.error} onRetry={() => void chats.reload()}
       activeJid={jid} filter={filter} onFilter={setFilter} query={query} onQuery={setQuery}
-      onOpenChat={openChat} onOpenMessage={openMessage} searchRef={searchRef} />
+      onOpenChat={openChat} onOpenMessage={openMessage} searchRef={searchRef}
+      onSyncAll={(mode) => void startStep("chat_routine", { body: { mode } })} />
   );
   const openCount = sugg.open;
   const panelBody = chat && (

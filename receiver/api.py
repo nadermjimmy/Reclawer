@@ -353,19 +353,48 @@ def master_export_file(which: str):
 REDO = {"map_projects": "Re-ask unreviewed", "parse_files": "Re-read all", "download_media": "Retry failed"}
 
 
-def chat_routine(log):
-    """Today's sync routine as one job: steps 1, 2, 3, 4 and 6b for every inventory chat."""
-    stages = [("Sync chats", history.sync_groups), ("Pull history", history.pull_history),
-              ("Download attachments", history.download_media), ("Read files", parse_files.parse_all),
-              ("Propose sheet updates", proposals.propose)]
-    for i, (name, fn) in enumerate(stages):
-        log("PROGRESS " + json.dumps({"stage": name, "done": i, "total": len(stages)}))
-        fn(log)
+def chat_routine(log, mode="batch"):
+    """Everyday sync of every inventory chat (all groups + ticked private chats), text first:
+    list chats, pull messages, suggest from text, then download and read attachments and suggest from them.
+    mode 'live' answers everything now (full price); 'batch' sends the reading to the half-price batch queue,
+    where the file stages start after this job has finished downloading."""
+    has_master = False
+    with db.connect() as c:
+        has_master = master.current_import(c) is not None
+    stages = ["Sync chats", "Pull history", "Suggest from text", "Download attachments", "Read files",
+              "Suggest from files"]
+
+    def step(i):
+        log("PROGRESS " + json.dumps({"stage": stages[i], "done": i, "total": len(stages)}))
+
+    step(0)
+    history.sync_groups(log)
+    step(1)
+    history.pull_history(log)
+    step(2)
+    if not has_master:
+        log("Skipped suggestions: upload the master workbook on the Master page first")
+    elif mode == "live":
+        n, f = proposals.run_stage_live(log, "text")
+        log(f"Text: {n} suggestion(s), {f} failed request(s)")
+    else:
+        proposals.start_batched(log)  # text batch goes out now; file stages follow once this job ends
+    step(3)
+    history.download_media(log)
+    step(4)
+    parse_files.parse_all(log)
+    step(5)
+    if has_master and mode == "live":
+        for st in ("sheets", "pdfs", "images"):
+            n, f = proposals.run_stage_live(log, st)
+            log(f"{st.capitalize()}: {n} suggestion(s), {f} failed request(s)")
+    elif has_master:
+        log("File suggestions follow automatically after the text batch: they arrive on the Updates page")
     log("PROGRESS " + json.dumps({"stage": "Finished", "done": len(stages), "total": len(stages)}))
 
 
-CHAT_ROUTINE = ("chat_routine", "Run chat steps for all inventory chats",
-                "Steps 1, 2, 3, 4 and 6b in one go: the everyday sync for the ticked chats.", chat_routine)
+CHAT_ROUTINE = ("chat_routine", "Sync all chats",
+                "Every group plus ticked private chats: text suggestions first, then attachments.", chat_routine)
 
 
 def steps():
@@ -428,6 +457,9 @@ async def start_job(key: str, request: Request):
         return err("not_found", 404, f"Unknown step {key}")
     title, fn = found[key]
     args = (True,) if data.get("redo") and key in REDO else ()
+    if key == "chat_routine":
+        mode = "live" if data.get("mode") == "live" else "batch"
+        args, title = (mode,), f"{title} ({'fast' if mode == 'live' else 'half price'})"
     job_id = jobs.start(title, fn, *args)
     if not job_id:
         with db.connect() as c:
