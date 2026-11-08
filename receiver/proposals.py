@@ -67,12 +67,14 @@ def _done(keys):
         c.executemany("INSERT OR IGNORE INTO processed_batches VALUES(?,?)", [(k, int(time.time())) for k in keys])
 
 
-def from_messages(log, batch=60):
+def from_messages(log, batch=60, jids=None):
+    """Read unread messages of the in-scope chats (or only `jids`). Returns (proposals written, failed batches)."""
+    written = failed = 0
     with db.connect() as c:
-        scoped = db.scoped_groups(c)
+        scoped = db.scoped_groups(c) if jids is None else list(jids)
         if not scoped:
             log("No in-scope chats selected.")
-            return
+            return 0, 0
         msgs = c.execute(
             "SELECT wa_id, ts, sender_name, text, file_name FROM source_messages "
             f"WHERE group_jid IN ({','.join('?' * len(scoped))}) AND text<>'' "
@@ -85,10 +87,13 @@ def from_messages(log, batch=60):
                               "attached_file": m["file_name"]} for m in chunk]}
         out = _ask(body, log, f"message batch {i // batch + 1}")
         if out is None:
+            failed += 1
             continue
         n = _store(out, "message", {m["wa_id"]: m["ts"] for m in chunk})
+        written += n
         _done(["u:" + m["wa_id"] for m in chunk])
         log(f"read {min(i + batch, len(msgs))}/{len(msgs)} messages, {n} proposals")
+    return written, failed
 
 
 def _file_ts(c, file_id):
@@ -96,9 +101,20 @@ def _file_ts(c, file_id):
                      "WHERE o.file_id=?", (file_id,)).fetchone()[0]
 
 
-def from_files(log, chunk_rows=150):
+def _chat_file_ids(c, jids):
+    if not jids:
+        return set()
+    return {r[0] for r in c.execute(
+        "SELECT DISTINCT o.file_id FROM file_occurrences o JOIN source_messages m ON m.wa_id=o.wa_id "
+        f"WHERE m.group_jid IN ({','.join('?' * len(jids))})", list(jids))}
+
+
+def from_files(log, chunk_rows=150, jids=None):
+    """Read unread rows/pages of files posted in the in-scope chats (or only in `jids`).
+    Returns (proposals written, failed batches)."""
+    written = failed = 0
     with db.connect() as c:
-        files = rows.scoped_file_ids(c)
+        files = rows.scoped_file_ids(c) if jids is None else _chat_file_ids(c, jids)
         todo = c.execute("SELECT r.id, r.file_id, r.sheet, r.kind, r.raw_json, f.file_name FROM source_rows r "
                          "JOIN source_files f ON f.id=r.file_id WHERE r.kind IN ('sheet_row','pdf_page') "
                          "AND 'ur:'||r.id NOT IN (SELECT batch_key FROM processed_batches) "
@@ -123,11 +139,14 @@ def from_files(log, chunk_rows=150):
                 out = _ask({"file": part[0]["file_name"], "sheet": sheet, "rows": lines}, log,
                            f"{part[0]['file_name']} / {sheet}")
                 if out is None:
+                    failed += 1
                     continue
                 n = _store(out, "row" if kind == "sheet_row" else "pdf_page",
                            {str(r["id"]): ts[file_id] for r in part})
+                written += n
                 log(f"{part[0]['file_name']} / {sheet}: {len(lines)} rows, {n} proposals")
             _done(["ur:%d" % r["id"] for r in part])
+    return written, failed
 
 
 def propose(log):

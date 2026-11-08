@@ -6,7 +6,8 @@ Unauthenticated /api/* calls get 401 {"error": "login"} from web.auth_middleware
 import datetime, json, os, re, time
 from fastapi import APIRouter, File, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
-import build, db, history, jobs, master, master_export, master_schema as ms, parse_files, proposals, rules, web
+import build, chat_sync, db, feed, history, jobs, master, master_export, master_schema as ms, parse_files, proposals, \
+    rules, search, web
 
 router = APIRouter(prefix="/api")
 spa_router = APIRouter()
@@ -463,6 +464,469 @@ async def reset_all(request: Request):
             return busy(c)
     db.reset()
     return {"ok": True}
+
+
+# ---------- chats (WhatsApp-Web style reading view; listen-only: nothing here sends to WhatsApp) ----------
+VISIBLE = feed.VISIBLE  # uses alias m
+
+
+def chat_kind(jid):
+    return "group" if jid.endswith("@g.us") else "private"
+
+
+def chat_row(c, jid):
+    """(jid, name, in_scope) for a chat we know (groups table or stored messages), else None."""
+    g = c.execute("SELECT g.name, COALESCE(s.in_scope,0) in_scope FROM groups g LEFT JOIN group_scope s ON s.jid=g.jid "
+                  "WHERE g.jid=?", (jid,)).fetchone()
+    if g:
+        return {"jid": jid, "name": g["name"] or jid, "in_scope": bool(g["in_scope"])}
+    if c.execute("SELECT 1 FROM source_messages WHERE group_jid=? LIMIT 1", (jid,)).fetchone():
+        s = c.execute("SELECT in_scope FROM group_scope WHERE jid=?", (jid,)).fetchone()
+        return {"jid": jid, "name": history.chat_name(jid, None), "in_scope": bool(s and s[0])}
+    return None
+
+
+def open_by_chat(c):
+    out = {}
+    for r in c.execute(f"SELECT {CHAT_SQL} chat_jid FROM proposals p WHERE p.state='proposed'"):
+        if r["chat_jid"]:
+            out[r["chat_jid"]] = out.get(r["chat_jid"], 0) + 1
+    return out
+
+
+def _preview(c, jid):
+    last = c.execute(f"SELECT m.text, m.file_name, m.message_type, m.sender_name FROM source_messages m "
+                     f"WHERE m.group_jid=? AND {VISIBLE} ORDER BY m.ts DESC LIMIT 1", (jid,)).fetchone()
+    if not last:
+        return "", False, None
+    text = last["text"] or last["file_name"] or \
+        {"imageMessage": "Photo", "videoMessage": "Video"}.get(last["message_type"], "Attachment")
+    return text[:140], not last["text"], last["sender_name"]
+
+
+KIND_FILTER = {"groups": "group", "private": "private"}
+
+
+@router.get("/chats")
+def list_chats(filter: str = "all", q: str = "", scope: str = "", has_suggestions: bool = False):
+    """Every chat with messages (plus groups and inventory chats without any), newest first.
+    filter: all / inventory / suggestions / groups / private. q filters names (Arabic-aware)."""
+    if scope == "ticked":
+        filter = "inventory"
+    if has_suggestions:
+        filter = "suggestions"
+    with db.connect() as c:
+        stats = {r["jid"]: r for r in c.execute(
+            f"SELECT m.group_jid jid, COUNT(*) n, MAX(m.ts) last_ts, SUM(m.has_media) media FROM source_messages m "
+            f"WHERE {VISIBLE} GROUP BY m.group_jid")}
+        names = {r["jid"]: r["name"] for r in c.execute("SELECT jid, name FROM groups")}
+        scoped = {r[0] for r in c.execute("SELECT jid FROM group_scope WHERE in_scope=1")}
+        synced = {r["jid"]: r for r in c.execute("SELECT * FROM chat_syncs")}
+        fresh = {r[0]: r[1] for r in c.execute(
+            f"SELECT m.group_jid, COUNT(*) FROM source_messages m JOIN chat_syncs s ON s.jid=m.group_jid "
+            f"WHERE m.ingested_at>s.synced_at AND {VISIBLE} GROUP BY m.group_jid")}
+        opened = open_by_chat(c)
+        jids = set(stats) | scoped | {j for j in names if j.endswith("@g.us")}
+        toks = search.tokens(q)
+        out = []
+        for jid in jids:
+            name = names.get(jid) or history.chat_name(jid, None)
+            if toks and not all(t in search.normalize(name) for t in toks):
+                continue
+            st = stats.get(jid)
+            item = {"jid": jid, "name": name, "kind": chat_kind(jid), "in_scope": jid in scoped,
+                    "count": st["n"] if st else 0, "media": (st["media"] or 0) if st else 0,
+                    "last_ts": st["last_ts"] if st else None, "open_suggestions": opened.get(jid, 0),
+                    "last_sync_at": synced[jid]["synced_at"] if jid in synced else None,
+                    "new_since_sync": fresh.get(jid, 0) if jid in synced else None}
+            if (filter == "inventory" and not item["in_scope"]) or (filter == "suggestions" and not
+                                                                    item["open_suggestions"]) \
+                    or (filter in KIND_FILTER and item["kind"] != KIND_FILTER[filter]):
+                continue
+            out.append(item)
+        out.sort(key=lambda i: (i["last_ts"] or 0, i["name"]), reverse=True)
+        for item in out:
+            item["preview"], item["media_preview"], item["preview_sender"] = _preview(c, item["jid"]) if item["count"] \
+                else ("", False, None)
+        counts = {"all": len(jids), "inventory": len(scoped & jids), "suggestions": len(set(opened) & jids)}
+    return {"chats": out, "counts": counts}
+
+
+def _set_scope(c, jids, on):
+    c.executemany("INSERT INTO group_scope(jid,in_scope) VALUES(?,?) ON CONFLICT(jid) DO UPDATE SET in_scope=?",
+                  [(j, 1 if on else 0, 1 if on else 0) for j in jids])
+
+
+@router.patch("/chats/{jid}")
+async def patch_chat(jid: str, request: Request):
+    data = await body_of(request)
+    if not isinstance(data.get("in_scope"), bool):
+        return err("bad_request", 422, "Send in_scope true or false")
+    with db.connect() as c:
+        if not chat_row(c, jid):
+            return err("unknown_chat", 404, "This chat isn't known yet")
+        _set_scope(c, [jid], data["in_scope"])
+    return {"jid": jid, "in_scope": data["in_scope"]}
+
+
+@router.patch("/chats")
+async def patch_chats(request: Request):
+    data = await body_of(request)
+    jids = [j for j in data.get("jids") or [] if isinstance(j, str)]
+    if not jids or not isinstance(data.get("in_scope"), bool):
+        return err("bad_request", 422, "Send jids and in_scope")
+    with db.connect() as c:
+        jids = [j for j in jids if chat_row(c, j)]
+        _set_scope(c, jids, data["in_scope"])
+    return {"updated": len(jids)}
+
+
+def _message_rows(c, rows):
+    """Chat messages as JSON, with the stored file (download link) and the suggestions they produced."""
+    ids = [r["wa_id"] for r in rows]
+    if not ids:
+        return []
+    marks = ",".join("?" * len(ids))
+    files = {r["wa_id"]: r["file_id"] for r in c.execute(
+        f"SELECT wa_id, file_id FROM file_occurrences WHERE wa_id IN ({marks})", ids)}
+    failed = {r[0] for r in c.execute(f"SELECT wa_id FROM media_fetch WHERE status='failed' AND wa_id IN ({marks})",
+                                      ids)}
+    finfo = {}
+    if files:
+        fids = list(set(files.values()))
+        finfo = {r["id"]: dict(r) for r in c.execute(
+            f"SELECT id, kind, file_name, mimetype, size, parse_status FROM source_files "
+            f"WHERE id IN ({','.join('?' * len(fids))})", fids)}
+    sugg = {}
+    for r in c.execute(f"SELECT id, source_ref FROM proposals WHERE source_kind='message' AND state<>'superseded' "
+                       f"AND source_ref IN ({marks})", ids):
+        sugg.setdefault(r["source_ref"], []).append(r["id"])
+    if files:
+        fids = list(set(files.values()))
+        by_file = {}
+        for r in c.execute(f"SELECT p.id, sr.file_id FROM proposals p JOIN source_rows sr "
+                           f"ON sr.id=CAST(p.source_ref AS INTEGER) WHERE p.source_kind IN ('row','pdf_page') "
+                           f"AND p.state<>'superseded' AND sr.file_id IN ({','.join('?' * len(fids))})", fids):
+            by_file.setdefault(r["file_id"], []).append(r["id"])
+        for wa, fid in files.items():
+            sugg.setdefault(wa, []).extend(by_file.get(fid, []))
+    out = []
+    for m in rows:
+        kind = feed.kind_of_message(m)
+        fid = files.get(m["wa_id"])
+        f = finfo.get(fid)
+        if f:
+            f = dict(f, url=f"/sources/file/{fid}", download_url=f"/sources/file/{fid}?download=1")
+        out.append({"id": m["wa_id"], "ts": m["ts"], "sender": m["sender_name"], "text": m["text"] or "",
+                    "kind": kind, "file_name": m["file_name"], "mimetype": m["mimetype"], "file": f,
+                    "media": "ok" if fid else "failed" if m["wa_id"] in failed else
+                             ("none" if kind == "text" else "pending"),
+                    "suggestion_ids": sorted(set(sugg.get(m["wa_id"], [])))})
+    return out
+
+
+def _page(c, jid, cond, args, order, limit):
+    return c.execute(f"SELECT m.rowid rid, m.* FROM source_messages m WHERE m.group_jid=? AND {VISIBLE} {cond} "
+                     f"ORDER BY m.ts {order}, m.rowid {order} LIMIT ?", [jid, *args, limit]).fetchall()
+
+
+@router.get("/chats/{jid}/messages")
+def chat_messages(jid: str, before: str = "", after: str = "", around: str = "", limit: int = 60):
+    """Paged messages, oldest -> newest. before/after: a message id (wa_id) or a timestamp; around: a wa_id to
+    open the chat at (half the page before it, half after). has_more = older exist, has_newer = newer exist."""
+    limit = max(10, min(limit, 200))
+    with db.connect() as c:
+        chat = chat_row(c, jid)
+        if not chat:
+            return err("unknown_chat", 404, "This chat isn't known yet")
+
+        def anchor(ref):
+            """(ts, rowid) of a message id, or (ts, big) for a plain timestamp."""
+            r = c.execute("SELECT ts, rowid FROM source_messages WHERE wa_id=? AND group_jid=?", (ref, jid)).fetchone()
+            if r:
+                return r["ts"] or 0, r["rowid"]
+            return (int(ref), None) if ref.isdigit() else (None, None)
+
+        older_cond = "AND (COALESCE(m.ts,0)<? OR (COALESCE(m.ts,0)=? AND m.rowid<?))"
+        newer_cond = "AND (COALESCE(m.ts,0)>? OR (COALESCE(m.ts,0)=? AND m.rowid>?))"
+        BIG = 1 << 62
+        found = None
+        if around:
+            ts, rid = anchor(around)
+            if rid is None:
+                return err("not_found", 404, "That message isn't in this chat")
+            half = limit // 2
+            older = _page(c, jid, older_cond, [ts, ts, rid], "DESC", half + 1)
+            newer = _page(c, jid, "AND (COALESCE(m.ts,0)>? OR (COALESCE(m.ts,0)=? AND m.rowid>=?))", [ts, ts, rid],
+                          "ASC", limit - half + 1)
+            has_more, has_newer = len(older) > half, len(newer) > limit - half
+            rows = list(reversed(older[:half])) + newer[:limit - half]
+            found = around
+        elif after:
+            ts, rid = anchor(after)
+            newer = _page(c, jid, newer_cond, [ts or 0, ts or 0, rid if rid is not None else BIG], "ASC", limit + 1)
+            has_newer, rows = len(newer) > limit, newer[:limit]
+            has_more = True
+        else:
+            if before:
+                ts, rid = anchor(before)
+                older = _page(c, jid, older_cond, [ts or 0, ts or 0, rid if rid is not None else -1], "DESC",
+                              limit + 1)
+            else:
+                older = _page(c, jid, "", [], "DESC", limit + 1)
+            has_more, rows, has_newer = len(older) > limit, list(reversed(older[:limit])), bool(before)
+        return {"chat": dict(chat, kind=chat_kind(jid)), "messages": _message_rows(c, rows), "has_more": has_more,
+                "has_newer": has_newer, "around": found}
+
+
+@router.get("/chats/{jid}/suggestions")
+@router.get("/chats/{jid}/proposals")
+def chat_suggestions(jid: str, state: str = "", days: int = 30, limit: int = 200):
+    """Suggestions whose source is this chat: open ones plus those decided in the last `days`, newest first.
+    state: proposed / approved / rejected to narrow; counts cover the same window."""
+    since = int(time.time()) - max(1, days) * 86400
+    with db.connect() as c:
+        if not chat_row(c, jid):
+            return err("unknown_chat", 404, "This chat isn't known yet")
+        found = [item(p) for p in c.execute(
+            f"SELECT * FROM ({PROPOSAL_SQL}) x WHERE x.chat_jid=? AND (x.state='proposed' OR "
+            f"(x.state IN ('approved','rejected') AND x.decided_at>=?)) "
+            f"ORDER BY CASE x.state WHEN 'proposed' THEN 0 ELSE 1 END, COALESCE(x.source_ts,0) DESC, x.id DESC",
+            (jid, since)).fetchall()]
+        has_master = master.current_import(c) is not None
+    counts = {s: sum(i["state"] == s for i in found) for s in ("proposed", "approved", "rejected")}
+    if state in counts:
+        found = [i for i in found if i["state"] == state]
+    return {"items": found[:max(1, min(limit, 500))], "counts": counts, "has_master": has_master,
+            "sheets": list(ms.SHEETS)}
+
+
+@router.post("/chats/{jid}/sync")
+async def sync_chat(jid: str, request: Request, add_to_scope: str = ""):
+    """202 {job_id} · 422 unknown_chat · 409 busy · 422 not_in_scope (confirm, then send add_to_scope)."""
+    data = await body_of(request)
+    add = bool(data.get("add_to_scope")) or add_to_scope.lower() in ("1", "true", "yes")
+    with db.connect() as c:
+        chat = chat_row(c, jid)
+        if not chat:
+            return err("unknown_chat", 422, "This chat isn't known yet. Run Sync chats in More > Pipeline.")
+        if jobs.running():
+            return busy(c)
+        if not chat["in_scope"] and not add:
+            return err("not_in_scope", 422, "Syncing adds this chat to the inventory chats. Confirm to continue.",
+                       chat=chat)
+    job_id = jobs.start(f"Sync chat: {chat['name']}", chat_sync.sync_chat, jid, add and not chat["in_scope"])
+    if not job_id:
+        with db.connect() as c:
+            return busy(c)
+    return JSONResponse({"job_id": job_id, "jid": jid}, 202)
+
+
+@router.get("/search")
+def search_api(q: str = "", chat: str = "", jid: str = "", limit: int = 50):
+    """Instant search: chat names, then messages (text, file name, sender), newest first, with a snippet and
+    highlight ranges [[start, end), ...] in the snippet. q needs 2+ characters. chat (or jid) narrows to one chat."""
+    t0 = time.perf_counter()
+    q, chat = q.strip(), chat or jid
+    empty = {"q": q, "chats": [], "messages": [], "has_more": False, "took_ms": 0}
+    toks = search.tokens(q)
+    if len(q) < 2 or not toks:
+        return empty
+    limit = max(1, min(limit, 1000))
+    with db.connect() as c:
+        names = {r["jid"]: r["name"] for r in c.execute("SELECT jid, name FROM groups")}
+        chats = []
+        if not chat:
+            scoped = {r[0] for r in c.execute("SELECT jid FROM group_scope WHERE in_scope=1")}
+            last = {r[0]: r[1] for r in c.execute("SELECT group_jid, MAX(ts) FROM source_messages GROUP BY group_jid")}
+            for j in set(names) | set(last):
+                name = names.get(j) or history.chat_name(j, None)
+                norm = search.normalize(name)
+                if all(t in norm for t in toks):
+                    chats.append({"jid": j, "name": name, "kind": chat_kind(j), "in_scope": j in scoped,
+                                  "last_ts": last.get(j), "match_ranges": search.ranges_in(name, toks)})
+            chats.sort(key=lambda x: x["last_ts"] or 0, reverse=True)
+        rows, more = search.find_messages(c, q, chat, limit)
+        hits = []
+        for r in rows:
+            h = search.message_hit(r, toks)
+            h["chat_name"] = names.get(r["group_jid"]) or history.chat_name(r["group_jid"], None)
+            hits.append(h)
+    return {"q": q, "chats": chats[:20], "messages": hits, "has_more": more,
+            "took_ms": round((time.perf_counter() - t0) * 1000, 1)}
+
+
+# ---------- insights ----------
+STALE_DAYS = 14  # owner decision: no change for 14 days (last approval, else the master Date cell)
+
+
+def _day(ts):
+    return datetime.datetime.fromtimestamp(ts, web.DUBAI).date().isoformat()
+
+
+def ins_summary(c, since, now):
+    one = lambda sql, *a: c.execute(sql, a).fetchone()[0]
+    spans = sorted(r[0] for r in c.execute(
+        "SELECT decided_at-created_at FROM proposals WHERE state IN ('approved','rejected') AND decided_at>=? "
+        "AND created_at IS NOT NULL", (since,)))
+    return {"open": one("SELECT COUNT(*) FROM proposals WHERE state='proposed'"),
+            "approved": one("SELECT COUNT(*) FROM proposals WHERE state='approved' AND decided_at>=?", since),
+            "rejected": one("SELECT COUNT(*) FROM proposals WHERE state='rejected' AND decided_at>=?", since),
+            "median_decision_s": spans[len(spans) // 2] if spans else None,
+            "rows_to_place": one("SELECT COUNT(*) FROM master_issues WHERE state='open'"),
+            "stale_count": len(_stale_rows(c, now))}
+
+
+def ins_changes(c, since, now):
+    approved = c.execute(f"SELECT * FROM ({PROPOSAL_SQL}) x WHERE x.state='approved' AND x.decided_at>=? "
+                         f"ORDER BY x.decided_at DESC, x.id DESC", (since,)).fetchall()
+    by = {}
+    for p in approved:
+        k = (p["sheet"] or "", p["field"])
+        by[k] = by.get(k, 0) + 1
+    groups = [{"sheet": s, "field": f, "field_label": field_label(f), "count": n}
+              for (s, f), n in sorted(by.items(), key=lambda kv: (-kv[1], kv[0]))]
+    recent = [{"id": p["id"], "project": p["row_project"] or p["project"], "sheet": p["sheet"] or "",
+               "field_label": field_label(p["field"]), "old_raw": p["old_raw"] or "", "new_raw": p["new_raw"] or "",
+               "decided_at": p["decided_at"], "chat_jid": p["chat_jid"], "chat_name": p["chat_name"]}
+              for p in approved[:30]]
+    return {"total": len(approved), "by_sheet_field": groups, "recent": recent}
+
+
+def ins_price_moves(c, since, now):
+    fields = ",".join("?" * len(ms.UNIT_FIELDS))
+    out = []
+    for p in c.execute(f"SELECT * FROM ({PROPOSAL_SQL}) x WHERE x.state='approved' AND x.decided_at>=? "
+                       f"AND x.field IN ({fields})", (since, *ms.UNIT_FIELDS)).fetchall():
+        old = ms.parse(p["field"], p["old_raw"]) if p["old_raw"] else {}
+        new = json.loads(p["new_parsed_json"] or "{}")
+        d = delta(p) or {}
+        if not (d.get("price_pct") is not None or d.get("area_to") or d.get("status_to") is not None):
+            continue
+        side = lambda x: {"area": x.get("area_sqm"), "price": x.get("price_egp"), "status": x.get("status") or None}
+        out.append({"id": p["id"], "project": p["row_project"] or p["project"], "developer": p["row_developer"] or
+                    p["developer"] or "", "sheet": p["sheet"] or "", "field": p["field"],
+                    "unit_type": field_label(p["field"]), "old_raw": p["old_raw"] or "", "new_raw": p["new_raw"] or "",
+                    "old": side(old), "new": side(new), "pct": d.get("price_pct"), "decided_at": p["decided_at"],
+                    "chat_jid": p["chat_jid"], "chat_name": p["chat_name"]})
+    out.sort(key=lambda r: (-(abs(r["pct"]) if r["pct"] is not None else -1), r["project"]))
+    return out
+
+
+def _stale_rows(c, now, days=STALE_DAYS):
+    """Usable price-grid and Sheet 2 rows with no approval and no master date within `days`."""
+    if not master.current_import(c):
+        return []
+    cutoff = datetime.datetime.fromtimestamp(now, web.DUBAI).date() - datetime.timedelta(days=days)
+    approvals = {r[0]: r[1] for r in c.execute(
+        "SELECT row_id, MAX(decided_at) FROM proposals WHERE state='approved' AND row_id IS NOT NULL GROUP BY row_id")}
+    dates = {r["row_id"]: json.loads(r["parsed_json"] or "{}") for r in c.execute(
+        "SELECT row_id, parsed_json FROM master_cells WHERE field='date'")}
+    out = []
+    kinds = (ms.GRID, ms.COMMISSION)
+    for r in c.execute(f"SELECT * FROM master_rows WHERE state IN ({','.join('?' * len(master.USABLE))}) "
+                       f"AND kind IN (?,?)", (*master.USABLE, *kinds)).fetchall():
+        last, basis = None, "never"
+        if approvals.get(r["id"]):
+            last, basis = datetime.datetime.fromtimestamp(approvals[r["id"]], web.DUBAI).date(), "approval"
+        else:
+            d = dates.get(r["id"]) or {}
+            if d.get("date"):
+                try:
+                    last, basis = datetime.date.fromisoformat(str(d["date"])[:10]), "master_date"
+                except ValueError:
+                    pass
+        if last and last >= cutoff:
+            continue
+        out.append({"row_id": r["id"], "project": r["project"], "project_key": r["project_key"],
+                    "developer": r["developer"] or "", "sheet": master.home_sheet(r), "row_number": r["row_number"],
+                    "last_update": last.isoformat() if last else None, "basis": basis,
+                    "days": (cutoff + datetime.timedelta(days=days) - last).days if last else None,
+                    "hold": (dates.get(r["id"]) or {}).get("row_status") or None})
+    return out
+
+
+def ins_stale(c, since, now):
+    rows_ = _stale_rows(c, now)
+    chats = {}
+    for r in c.execute(f"SELECT p.project_key, p.row_id, {CHAT_SQL} chat_jid FROM proposals p"):
+        if r["chat_jid"]:
+            for key in (("row", r["row_id"]), ("key", r["project_key"])):
+                bucket = chats.setdefault(key, {})
+                bucket[r["chat_jid"]] = bucket.get(r["chat_jid"], 0) + 1
+    names = {r["jid"]: r["name"] for r in c.execute("SELECT jid, name FROM groups")}
+    for r in rows_:
+        votes = chats.get(("row", r["row_id"])) or chats.get(("key", r["project_key"])) or {}
+        jid = max(votes, key=votes.get) if votes else None
+        r["chat_jid"], r["chat_name"] = jid, (names.get(jid) or jid) if jid else None
+        r.pop("project_key")
+    rows_.sort(key=lambda r: (r["last_update"] or "", r["project"]))
+    return {"days": STALE_DAYS, "count": len(rows_), "rows": rows_[:200]}
+
+
+def ins_throughput(c, since, now):
+    days = {}
+    start = datetime.datetime.fromtimestamp(since, web.DUBAI).date()
+    end = datetime.datetime.fromtimestamp(now, web.DUBAI).date()
+    d = start
+    while d <= end:
+        days[d.isoformat()] = {"day": d.isoformat(), "created": 0, "approved": 0, "rejected": 0}
+        d += datetime.timedelta(days=1)
+    for r in c.execute("SELECT created_at FROM proposals WHERE created_at>=?", (since,)):
+        b = days.get(_day(r[0]))
+        if b is not None:
+            b["created"] += 1
+    for r in c.execute("SELECT state, decided_at FROM proposals WHERE state IN ('approved','rejected') "
+                       "AND decided_at>=?", (since,)):
+        b = days.get(_day(r[1]))
+        if b is not None:
+            b[r[0]] += 1
+    return list(days.values())
+
+
+def ins_rows_to_place(c, since, now):
+    return {"count": c.execute("SELECT COUNT(*) FROM master_issues WHERE state='open'").fetchone()[0],
+            "first": master_issues("open")[:5]}
+
+
+def ins_chats(c, since, now):
+    names = {r["jid"]: r["name"] for r in c.execute("SELECT jid, name FROM groups")}
+    opened = open_by_chat(c)
+    synced = {r["jid"]: r["synced_at"] for r in c.execute("SELECT jid, synced_at FROM chat_syncs")}
+    scoped = {r[0] for r in c.execute("SELECT jid FROM group_scope WHERE in_scope=1")}
+    act = c.execute(f"SELECT m.group_jid jid, COUNT(*) n FROM source_messages m WHERE m.ts>=? AND {VISIBLE} "
+                    f"GROUP BY m.group_jid ORDER BY n DESC", (since,)).fetchall()
+    return {"total_messages": sum(r["n"] for r in act), "active_chats": len(act),
+            "top": [{"jid": r["jid"], "name": names.get(r["jid"]) or history.chat_name(r["jid"], None),
+                     "messages": r["n"], "open_suggestions": opened.get(r["jid"], 0), "in_scope": r["jid"] in scoped,
+                     "last_sync_at": synced.get(r["jid"])} for r in act[:10]]}
+
+
+INSIGHTS = {"summary": ins_summary, "changes": ins_changes, "price_moves": ins_price_moves, "stale": ins_stale,
+            "throughput": ins_throughput, "rows_to_place": ins_rows_to_place, "chats": ins_chats}
+
+
+@router.get("/insights")
+def insights(days: int = 7, sections: str = ""):
+    """Each section is computed on its own: one failing returns {errors: {section: text}} and the rest still render.
+    sections: comma list to compute only some (a section's Retry)."""
+    days = max(1, min(days, 366))
+    now = int(time.time())
+    since = int((datetime.datetime.fromtimestamp(now, web.DUBAI).replace(hour=0, minute=0, second=0, microsecond=0)
+                 - datetime.timedelta(days=days - 1)).timestamp())
+    wanted = [s for s in sections.split(",") if s in INSIGHTS] or list(INSIGHTS)
+    out, errors = {}, {}
+    with db.connect() as c:
+        has_master = master.current_import(c) is not None
+        open_n = c.execute("SELECT COUNT(*) FROM proposals WHERE state='proposed'").fetchone()[0]
+        for name in wanted:
+            try:
+                out[name] = INSIGHTS[name](c, since, now)
+            except Exception as e:  # keep the other sections
+                errors[name] = f"{type(e).__name__}: {e}"[:300]
+    return {"days": days, "from": since, "to": now, "has_master": has_master, "sections": out, "errors": errors,
+            "exports": {"team": "/api/master/export/team", "sql": "/api/master/export/sql",
+                        "open_suggestions": open_n}}
 
 
 # ---------- legacy pages (More), straight ports of web.py ----------
