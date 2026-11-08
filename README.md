@@ -117,3 +117,18 @@ Step 6b runs through the Message Batches API at half price: one batch per stage,
 poller every `INGEST_POLL_SECONDS` (default 60), usually within an hour per stage. **Sync now** on one chat runs
 the same four stages live. Settings: `CLAUDE_EFFORT` (default `medium`), `INGEST_MODE=live` to run 6b without the
 batch queue, `CLAUDE_FALLBACKS=0` to turn off the server-side refusal fallback.
+
+## Brain (second look before a person)
+
+After every sync (Sync now, Sync all chats, the batched run) the brain (`brain.py`, `CLAUDE_BRAIN_MODEL`, default
+Opus 5.5) reviews each open suggestion against the sheet rows it could mean: similar names, the same developer's
+rows, and rows this chat has updated before. It:
+
+- moves a false "new project" onto the existing row (the chat's spelling becomes an alias once approved);
+- **auto-approves** only when all hold: existing row, high confidence, value in sheet format, unit price within
+  ±20% (`BRAIN_PRICE_BAND`), no Hold/Hide, and the column isn't commission, feedback or location;
+- **auto-rejects** clear noise (resale/client units, misread values) and duplicates the row already has;
+- leaves the rest on Updates with its reason. New rows always need a person.
+
+Every brain decision shows "Approved/Rejected by brain" with its reason and a **Reopen** link. More > Pipeline >
+6c (or "Review Backlog Now" on Updates) reviews the existing backlog.

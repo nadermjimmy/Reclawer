@@ -1,7 +1,7 @@
 import { AnimatePresence, motion, useReducedMotion, type Variants } from "framer-motion";
-import { Check, FileSpreadsheet, FileText, Image as ImageIcon, MessageSquare, X } from "lucide-react";
-import { memo } from "react";
-import type { Proposal } from "../../api/proposals";
+import { Check, FileSpreadsheet, FileText, Image as ImageIcon, MessageSquare, Sparkles, X } from "lucide-react";
+import { memo, useState } from "react";
+import { BRAIN_CHANGED, reopen, type Proposal } from "../../api/proposals";
 import { Button, IconButton, WarningChip } from "../../components";
 import { relTime } from "../../lib/format";
 import { dur, ease, rowEnter, rowExit } from "../../motion";
@@ -69,6 +69,32 @@ interface RowProps extends RowHandlers {
   metric: string;
 }
 
+const VERDICT: Record<string, string> = {
+  update_existing: "Existing row", new_project: "New project", noise: "Noise", unsure: "Unsure",
+};
+
+export function BrainLine({ p }: { p: Proposal }) {
+  const b = p.brain!;
+  const who = p.decided_by === "brain" ? (p.state === "approved" ? "Approved by brain" : "Rejected by brain") : `Brain: ${VERDICT[b.verdict] ?? b.verdict}`;
+  return (
+    <span className={`qbrain qbrain-${b.verdict}`} title={`${who} (${b.confidence} confidence)`}>
+      <Sparkles size={13} aria-hidden="true" />
+      <span className="qbrain-who">{who}</span>
+      <span className="qbrain-reason" dir="auto">{b.reason}</span>
+    </span>
+  );
+}
+
+function ReopenButton({ p }: { p: Proposal }) {
+  const [busy, setBusy] = useState(false);
+  return (
+    <button type="button" className="link-btn" disabled={busy} onClick={() => {
+      setBusy(true);
+      void reopen(p.id).then(() => window.dispatchEvent(new CustomEvent(BRAIN_CHANGED))).finally(() => setBusy(false));
+    }}>Reopen</button>
+  );
+}
+
 const QueueRow = memo(function QueueRow({ p, focused, selected, problem, readOnly, sheetChoice, sheets, picking, metric,
   onFocus, onOpen, onToggle, onApprove, onReject, onSheet }: RowProps) {
   const blocked = needsSheet(p) && !sheetChoice;
@@ -93,6 +119,7 @@ const QueueRow = memo(function QueueRow({ p, focused, selected, problem, readOnl
       <div className="qmeta">
         <SourceChip p={p} />
         {p.warning_codes.map((c) => <WarningChip key={c} code={c} sheet={p.sheet} />)}
+        {p.brain && <BrainLine p={p} />}
         {!readOnly && needsSheet(p) && (
           <label className={`qsheet${picking ? " is-picking" : ""}`} onClick={(e) => e.stopPropagation()}>
             <span className="sr-only">Sheet for {name}</span>
@@ -113,7 +140,10 @@ const QueueRow = memo(function QueueRow({ p, focused, selected, problem, readOnl
             onClick={() => onReject(p)} />
         </div>
       ) : (
-        <div className="qactions caption muted tnum">{p.decided_at ? relTime(p.decided_at) : ""}</div>
+        <div className="qactions caption muted tnum" onClick={(e) => e.stopPropagation()}>
+          {p.decided_by === "brain" && <ReopenButton p={p} />}
+          {p.decided_at ? relTime(p.decided_at) : ""}
+        </div>
       )}
       {problem && <div className="qproblem" role="status">{problem}</div>}
     </div>

@@ -230,7 +230,8 @@ def test_sync_chat_end_to_end(client, monkeypatch):
     stages = [json.loads(l.split("PROGRESS ", 1)[1]) for l in log.splitlines() if "PROGRESS " in l]
     assert [s["stage"] for s in stages] == [1, 2, 3, 4, 5] and stages[0] == {
         "stage": 1, "of": 4, "label": "Pull latest messages", "done": 0, "total": 4}
-    assert job["result"] == {"messages": 3, "files": 1, "files_failed": 0, "suggestions": 1, "failed_batches": 0}
+    assert job["result"] == {"messages": 3, "files": 1, "files_failed": 0, "suggestions": 1, "failed_batches": 0,
+                             "auto_approved": 0, "auto_rejected": 0}
     assert job["progress"]["label"] == "Finished"
     assert set(pulled) == {SYNC}                         # only this chat was pulled
     assert "uae_extra" not in asked and {"s1", "s2"} <= set(asked)  # only this chat's messages were read

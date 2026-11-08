@@ -215,6 +215,16 @@ export function DetailPane({ p, detail, error, onRetry, readOnly, sheets, sheetC
         </div>
       )}
 
+      {p.brain && (
+        <Section title="Brain">
+          <p className="brain-note" dir="auto">
+            <b>{p.brain.verdict === "update_existing" ? "Existing row" : p.brain.verdict === "new_project" ? "New project"
+              : p.brain.verdict === "noise" ? "Noise" : "Unsure"}</b>
+            <span className="muted"> · {p.brain.confidence} confidence</span><br />{p.brain.reason}
+          </p>
+        </Section>
+      )}
+
       {p.quote && (
         <Section title="Quote">
           <blockquote className="quote" dir="auto"><Highlight text={p.quote} tokens={tokens} /></blockquote>

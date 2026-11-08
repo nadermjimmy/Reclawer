@@ -6,7 +6,7 @@ The job log carries `PROGRESS {"stage": n, "of": 4, "label": ...}` lines for the
 sends anything to WhatsApp.
 """
 import json, time
-import db, history, master, parse_files, proposals
+import brain, db, history, master, parse_files, proposals
 
 STAGES = ("Pull latest messages", "Suggest from text", "Download files", "Suggest from files")
 
@@ -66,6 +66,9 @@ def sync_chat(log, jid, add_to_scope=False):
             n, failed = proposals.run_stage_live(log, stage, jids=[jid])
             result["suggestions"] += n
             result["failed_batches"] += failed
+        # the brain checks this chat's suggestions: moves false new rows onto existing rows, approves safe updates
+        b = brain.review(log, jids=[jid])
+        result["auto_approved"], result["auto_rejected"] = b["approved"], b["rejected"]
     log("PROGRESS " + json.dumps({"stage": len(STAGES) + 1, "of": len(STAGES), "label": "Finished",
                                   "done": len(STAGES), "total": len(STAGES)}))
     finish()

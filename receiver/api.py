@@ -6,7 +6,7 @@ Unauthenticated /api/* calls get 401 {"error": "login"} from web.auth_middleware
 import datetime, json, os, re, time
 from fastapi import APIRouter, File, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
-import build, chat_sync, db, feed, history, jobs, master, master_export, master_schema as ms, parse_files, proposals, \
+import brain, build, chat_sync, db, feed, history, jobs, master, master_export, master_schema as ms, parse_files, proposals, \
     rules, search, web
 
 router = APIRouter(prefix="/api")
@@ -94,9 +94,12 @@ CHAT_SQL = ("(CASE WHEN p.source_kind='message' THEN (SELECT sm.group_jid FROM s
             "WHERE sr.id=CAST(p.source_ref AS INTEGER) ORDER BY sm.ts DESC LIMIT 1) END)")
 FILE_SQL = ("(CASE WHEN p.source_kind='message' THEN NULL ELSE (SELECT sf.file_name FROM source_rows sr "
             "JOIN source_files sf ON sf.id=sr.file_id WHERE sr.id=CAST(p.source_ref AS INTEGER)) END)")
-PROPOSAL_SQL = (f"SELECT x.*, g.name chat_name FROM (SELECT p.*, r.project row_project, r.developer row_developer, "
+PROPOSAL_SQL = (f"SELECT x.*, g.name chat_name, b.verdict brain_verdict, b.confidence brain_confidence, "
+                f"b.reason brain_reason, b.action brain_action FROM (SELECT p.*, r.project row_project, "
+                f"r.developer row_developer, "
                 f"r.row_number, {CHAT_SQL} chat_jid, {FILE_SQL} source_file FROM proposals p "
-                f"LEFT JOIN master_rows r ON r.id=p.row_id) x LEFT JOIN groups g ON g.jid=x.chat_jid")
+                f"LEFT JOIN master_rows r ON r.id=p.row_id) x LEFT JOIN groups g ON g.jid=x.chat_jid "
+                f"LEFT JOIN brain_reviews b ON b.proposal_id=x.id")
 
 
 def field_label(field):
@@ -136,6 +139,9 @@ def item(p):
         "warnings": [{"code": code, "text": text} for code, text in warns],
         "warning_codes": [code for code, _ in warns],
         "created_at": p["created_at"], "decided_at": p["decided_at"],
+        "decided_by": p["decided_by"] if "decided_by" in p.keys() else None,
+        "brain": ({"verdict": p["brain_verdict"], "confidence": p["brain_confidence"], "reason": p["brain_reason"],
+                   "action": p["brain_action"]} if "brain_verdict" in p.keys() and p["brain_verdict"] else None),
     }
 
 
@@ -183,6 +189,15 @@ def list_proposals(state: str = "proposed", sheet: str = "", match: str = "", q:
     return {"items": page, "total": len(found), "counts": counts, "warning_counts": warning_counts,
             "next_cursor": str(start + limit) if start + limit < len(found) else None, "has_master": has_master,
             "sheets": list(ms.SHEETS)}
+
+
+@router.post("/proposals/{pid}/reopen")
+def reopen_proposal(pid: int):
+    """Undo a brain decision (approved or rejected by the brain): back on Updates."""
+    if not brain.reopen(pid):
+        return err("not_reopenable", 422, "Only suggestions the brain decided can be reopened")
+    with db.connect() as c:
+        return {"ok": True, "counts": state_counts(c)}
 
 
 @router.post("/proposals/decide")
@@ -388,6 +403,7 @@ def chat_routine(log, mode="batch"):
         for st in ("sheets", "pdfs", "images"):
             n, f = proposals.run_stage_live(log, st)
             log(f"{st.capitalize()}: {n} suggestion(s), {f} failed request(s)")
+        brain.review(log)
     elif has_master:
         log("File suggestions follow automatically after the text batch: they arrive on the Updates page")
     log("PROGRESS " + json.dumps({"stage": "Finished", "done": len(stages), "total": len(stages)}))

@@ -125,6 +125,11 @@ CREATE TABLE IF NOT EXISTS ingest_items(
     keys_json TEXT, state TEXT DEFAULT 'pending');
 CREATE INDEX IF NOT EXISTS ix_ii_run ON ingest_items(run_id, state);
 
+-- brain: second look at open suggestions (re-targets false new rows, approves safe updates, rejects noise)
+CREATE TABLE IF NOT EXISTS brain_reviews(
+    proposal_id INTEGER PRIMARY KEY, verdict TEXT, row_id INTEGER, confidence TEXT, reason TEXT, action TEXT,
+    model TEXT, created_at INTEGER);
+
 CREATE TABLE IF NOT EXISTS jobs(
     id INTEGER PRIMARY KEY, name TEXT, status TEXT, started_at INTEGER, finished_at INTEGER, log TEXT);
 """
@@ -145,6 +150,9 @@ def init():
         import search
         search.ensure(c)  # FTS5 message index (created once, then caught up with any unindexed rows)
         c.execute("UPDATE jobs SET status='interrupted' WHERE status='running'")  # container restarted mid-job
+        cols = {r[1] for r in c.execute("PRAGMA table_info(proposals)")}
+        if "decided_by" not in cols:  # 'brain' when the brain approved or rejected it, else a person
+            c.execute("ALTER TABLE proposals ADD COLUMN decided_by TEXT")
         if not c.execute("SELECT 1 FROM meta WHERE key='groups_in_scope_v1'").fetchone():
             # owner decision: every WhatsApp group is read; private chats stay opt-in. A group can still be unticked.
             c.execute("UPDATE group_scope SET in_scope=1 WHERE jid LIKE '%@g.us'")
