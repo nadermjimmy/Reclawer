@@ -3,6 +3,12 @@ import threading, time, traceback
 import db
 
 _lock = threading.Lock()
+_open = set()  # jobs that hand off to background work (batched reads) and finish later
+
+
+def keep_open(job_id):
+    """Leave this job's status as set by the caller when its function returns."""
+    _open.add(job_id)
 
 
 class Log:
@@ -37,9 +43,11 @@ def start(name, fn, *args):
             log(f"ERROR: {e}")
             log(traceback.format_exc(limit=3))
         finally:
-            with db.connect() as c:
-                c.execute("UPDATE jobs SET status=?, finished_at=? WHERE id=?",
-                          (status, int(time.time()), job_id))
+            if status == "failed" or job_id not in _open:
+                with db.connect() as c:
+                    c.execute("UPDATE jobs SET status=?, finished_at=? WHERE id=?",
+                              (status, int(time.time()), job_id))
+            _open.discard(job_id)
             _lock.release()
 
     threading.Thread(target=run, daemon=True).start()
@@ -52,6 +60,8 @@ def run_now(name, fn, *args):
         job_id = c.execute("INSERT INTO jobs(name,status,started_at,log) VALUES(?,?,?,'')",
                            (name, "running", int(time.time()))).lastrowid
     fn(Log(job_id), *args)
-    with db.connect() as c:
-        c.execute("UPDATE jobs SET status='done', finished_at=? WHERE id=?", (int(time.time()), job_id))
+    if job_id not in _open:
+        with db.connect() as c:
+            c.execute("UPDATE jobs SET status='done', finished_at=? WHERE id=?", (int(time.time()), job_id))
+    _open.discard(job_id)
     return job_id

@@ -150,12 +150,19 @@ def parse_pdf(c, f):
     return f"{len(reader.pages)} pages"
 
 
-PARSERS = {"workbook": parse_workbook, "csv": parse_csv, "pdf": parse_pdf}
+def parse_image(c, f):
+    """Images are read by Claude (vision) in the suggestion step; one source row gives them a stable reference."""
+    c.execute("INSERT OR IGNORE INTO source_rows(file_id,sheet,row_number,kind,raw_json) VALUES(?,?,?,?,?)",
+              (f["id"], "image", 1, "image", json.dumps({"mimetype": f["mimetype"]})))
+    return "image (read by Claude in the suggestion step)"
+
+
+PARSERS = {"workbook": parse_workbook, "csv": parse_csv, "pdf": parse_pdf, "image": parse_image}
 
 
 def parse_all(log, reparse=False):
     with db.connect() as c:
-        q = "SELECT * FROM source_files WHERE kind IN ('workbook','csv','pdf')"
+        q = "SELECT * FROM source_files WHERE kind IN ('workbook','csv','pdf','image')"
         if not reparse:
             q += " AND parse_status='pending'"
         files = c.execute(q).fetchall()

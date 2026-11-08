@@ -47,7 +47,7 @@ def classify(log, limit=200):
                        {"type": "text", "text": json.dumps({"known_projects": known, "messages": ctx},
                                                            ensure_ascii=False)}]
             try:
-                out = llm.call_json(SYSTEM, content, SCHEMA, max_tokens=4000)
+                out = llm.call_json(SYSTEM, content, SCHEMA, max_tokens=16000)  # thinking counts toward this
             except Exception as e:
                 log(f"{f['file_name'] or f['sha256'][:8]}: failed: {e}")
                 continue

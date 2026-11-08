@@ -55,10 +55,10 @@ def sync_chat(log, jid, add_to_scope=False):
         log("Skipped suggestions: upload the master workbook on the Master page to get suggestions")
         result["skipped"] = "no_master"
     else:
-        for step in (proposals.from_messages, proposals.from_files):
-            n, failed = step(log, jids=[jid])
-            result["suggestions"] += n
-            result["failed_batches"] += failed
+        # same reading order as the full run (text, spreadsheets, PDFs, images), answered live for this chat
+        n, failed = proposals.run_live(log, jids=[jid])
+        result["suggestions"] += n
+        result["failed_batches"] += failed
     log("PROGRESS " + json.dumps({"stage": len(STAGES) + 1, "of": len(STAGES), "label": "Finished",
                                   "done": len(STAGES), "total": len(STAGES)}))
     finish()

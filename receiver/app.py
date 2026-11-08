@@ -29,6 +29,9 @@ def extract_text(msg: dict) -> str:
             or "")
 
 store.init()
+if int(os.getenv("INGEST_POLL_SECONDS", "60")) > 0:  # collects batched reads (step 6b) as they finish
+    import proposals
+    proposals.start_poller(int(os.getenv("INGEST_POLL_SECONDS", "60")))
 app = FastAPI()
 app.middleware("http")(web.auth_middleware)
 app.mount("/static", StaticFiles(directory=os.path.join(os.path.dirname(__file__), "static")), name="static")

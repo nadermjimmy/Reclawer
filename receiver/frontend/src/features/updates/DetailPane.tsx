@@ -1,4 +1,4 @@
-import { Check, ExternalLink, FileSpreadsheet, FileText, MessageSquare, X } from "lucide-react";
+import { Check, ExternalLink, FileSpreadsheet, FileText, Image as ImageIcon, MessageSquare, X } from "lucide-react";
 import { useEffect, useMemo, useRef, type ReactNode } from "react";
 import { fileUrl } from "../../api/legacy";
 import type { ContextMessage, Proposal, ProposalDetail } from "../../api/proposals";
@@ -81,6 +81,19 @@ function Source({ d, tokens }: { d: ProposalDetail; tokens: string[] }) {
           <MessageSquare size={12} aria-hidden="true" /> <span dir="auto">{c.chat.name}</span>, 30 minutes either side
         </p>
         <Messages messages={c.messages} tokens={tokens} />
+      </>
+    );
+  if (c.kind === "image")
+    return (
+      <>
+        <p className="caption muted src-file">
+          <ImageIcon size={12} aria-hidden="true" />
+          <a href={fileUrl(c.file.id)} target="_blank" rel="noreferrer" dir="auto">{c.file.name || "Image"}</a>
+          <span>Read from the image</span>
+        </p>
+        <a href={fileUrl(c.file.id)} target="_blank" rel="noreferrer">
+          <img className="src-image" src={fileUrl(c.file.id)} alt={`Image from the chat: ${c.file.name || "attachment"}`} loading="lazy" />
+        </a>
       </>
     );
   const Icon = c.kind === "row" ? FileSpreadsheet : FileText;

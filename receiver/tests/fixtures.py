@@ -76,7 +76,7 @@ class FakeEvolution:
         return {"base64": base64.b64encode(data).decode(), "fileName": name, "mimetype": XLSX}
 
 
-def fake_llm(system, content, schema, max_tokens=16000):
+def fake_llm(system, content, schema, max_tokens=16000, **kw):
     if "map rows of real-estate availability" in system:
         out = []
         for ctx in json.loads(content)["contexts"]:
@@ -121,6 +121,7 @@ def run_pipeline():
     jobs.run_now("sync", history.sync_groups)
     with db.connect() as c:
         c.execute("UPDATE group_scope SET in_scope=1 WHERE jid=?", (UAE,))
+        c.execute("UPDATE group_scope SET in_scope=0 WHERE jid=?", (EGY,))  # groups are read by default; untick one
     for step in (history.pull_history, history.download_media, parse_files.parse_all, mapping.propose,
                  facts.extract_all, build.rebuild):
         jobs.run_now(step.__name__, step)

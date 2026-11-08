@@ -120,7 +120,7 @@ def test_propose_and_decide(env, monkeypatch):
     _src(db, "u2", 5100, "New launch Sunset Bay in New Zayed, 3 bed 160/9,000,000, 10% over 8 years")
     _src(db, "u3", 4000, "older: ZED East 2 bed 128/7,000,000")
 
-    def fake(system, content, schema, max_tokens=16000):
+    def fake(system, content, schema, max_tokens=16000, **kw):
         assert "broker team's project sheet" in system
         ups = []
         for m in json.loads(content).get("messages", []):

@@ -103,18 +103,18 @@ def sync_groups(log):
             name = ch.get("name") or ch.get("subject") or ch.get("pushName")
             c.execute("INSERT INTO groups VALUES(?,?) ON CONFLICT(jid) DO UPDATE SET "
                       "name=COALESCE(?, groups.name)", (jid, chat_name(jid, name), name or None))
-            c.execute("INSERT OR IGNORE INTO group_scope(jid,in_scope) VALUES(?,0)", (jid,))
+            c.execute("INSERT OR IGNORE INTO group_scope(jid,in_scope) VALUES(?,?)", (jid, int(jid.endswith("@g.us"))))
         for g in groups:  # live subjects win for groups
             if g.get("id"):
                 if not c.execute("SELECT 1 FROM groups WHERE jid=?", (g["id"],)).fetchone():
                     n_groups += 1
                 c.execute("INSERT OR REPLACE INTO groups VALUES(?,?)", (g["id"], g.get("subject") or g["id"]))
-                c.execute("INSERT OR IGNORE INTO group_scope(jid,in_scope) VALUES(?,0)", (g["id"],))
+                c.execute("INSERT OR IGNORE INTO group_scope(jid,in_scope) VALUES(?,1)", (g["id"],))
         c.execute("UPDATE messages SET group_name=(SELECT name FROM groups WHERE jid=group_jid) "
                   "WHERE group_name IS NULL")
     for e in errors:
         log(f"Note - couldn't get {e}")
-    log(f"{n_groups} groups and {n_private} private chats found. Tick the inventory chat(s) on the Chats page.")
+    log(f"{n_groups} groups and {n_private} private chats found. All groups are read; tick private chats on the Chats page to include them.")
 
 
 def pull_history(log, only_scoped=True, jids=None):

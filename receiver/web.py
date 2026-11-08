@@ -114,8 +114,9 @@ STEPS = [
      mapping.propose),
     ("extract_facts", "6. Extract facts (Claude)", "Find location, service charge, payment plan, completion, "
      "amenities, handover and status statements.", facts.extract_all),
-    ("propose_updates", "6b. Propose sheet updates (Claude)", "Compare chats and files with the master workbook "
-     "and list cell updates for approval on the Updates page.", proposals.propose),
+    ("propose_updates", "6b. Propose sheet updates (Claude)", "Read every group's text messages first, then "
+     "spreadsheets, PDFs and images for what's still missing; sent through the batch queue at half price, results "
+     "arrive on the Updates page as each stage finishes.", proposals.propose),
     ("classify_images", "7. Review images (Claude)", "Propose what each image shows (shown only after you approve).",
      media_review.classify),
     ("build", "8. Build inventory", "Rebuild projects, phases, units and the review queue.", build.rebuild),

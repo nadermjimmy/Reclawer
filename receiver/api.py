@@ -241,6 +241,8 @@ def source_context(c, kind, ref):
     base = {"kind": kind, "file": {"id": r["file_id"], "name": r["file_name"], "kind": r["file_kind"]},
             "sheet": r["sheet"], "row_number": r["row_number"], "section_label": r["section_label"],
             "hidden": bool(r["hidden"]), "chats": chats}
+    if r["kind"] == "image":
+        return dict(base, image_url=f"/sources/file/{r['file_id']}")
     if r["kind"] == "pdf_page":
         text = raw.get("text", "")
         return dict(base, page=r["row_number"], text=text[:8000], truncated=len(text) > 8000)
@@ -605,7 +607,7 @@ def _message_rows(c, rows):
         fids = list(set(files.values()))
         by_file = {}
         for r in c.execute(f"SELECT p.id, sr.file_id FROM proposals p JOIN source_rows sr "
-                           f"ON sr.id=CAST(p.source_ref AS INTEGER) WHERE p.source_kind IN ('row','pdf_page') "
+                           f"ON sr.id=CAST(p.source_ref AS INTEGER) WHERE p.source_kind IN ('row','pdf_page','image') "
                            f"AND p.state<>'superseded' AND sr.file_id IN ({','.join('?' * len(fids))})", fids):
             by_file.setdefault(r["file_id"], []).append(r["id"])
         for wa, fid in files.items():
@@ -1114,7 +1116,7 @@ def source_row(row_id: int):
         kind = c.execute("SELECT kind FROM source_rows WHERE id=?", (row_id,)).fetchone()
         if not kind:
             return err("not_found", 404)
-        return source_context(c, "pdf_page" if kind[0] == "pdf_page" else "row", str(row_id))
+        return source_context(c, kind[0] if kind[0] in ("pdf_page", "image") else "row", str(row_id))
 
 
 @router.get("/reconciliation")
