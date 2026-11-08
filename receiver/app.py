@@ -1,7 +1,6 @@
 """Receives Evolution API webhooks, keeps group messages, drops noise. Also serves the inventory web app."""
 import os, re, sqlite3, time
 from fastapi import FastAPI, Request, HTTPException
-from fastapi.staticfiles import StaticFiles
 import api, db as store, evolution, feed, history, web
 
 DB = os.getenv("DB_PATH", "/data/messages.db")
@@ -34,7 +33,6 @@ if int(os.getenv("INGEST_POLL_SECONDS", "60")) > 0:  # collects batched reads (s
     proposals.start_poller(int(os.getenv("INGEST_POLL_SECONDS", "60")))
 app = FastAPI()
 app.middleware("http")(web.auth_middleware)
-app.mount("/static", StaticFiles(directory=os.path.join(os.path.dirname(__file__), "static")), name="static")
 app.include_router(web.router)
 app.include_router(feed.router)
 app.include_router(api.router)      # JSON API for the new app

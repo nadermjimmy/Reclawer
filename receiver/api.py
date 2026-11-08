@@ -1,4 +1,4 @@
-"""JSON API for the new admin app (/app). Same cookie session as the classic pages (web.py).
+"""JSON API for the admin app (/app). Session cookie and auth live in web.py.
 
 Unauthenticated /api/* calls get 401 {"error": "login"} from web.auth_middleware. Errors share one shape:
 {"error": code, "detail"?: ...}; 409 {"error": "busy", "job": {...}} means another job is running.
@@ -1059,7 +1059,7 @@ async def save_mapping(request: Request):
     if not d.get("key") or d.get("action") not in ("approve", "reject", "exclude"):
         return err("bad_request", 422)
     web.save_mapping(key=d["key"], action=d["action"], project_name=d.get("project_name", ""),
-                     phase_label=d.get("phase_label", ""), developer=d.get("developer", ""), back="/")
+                     phase_label=d.get("phase_label", ""), developer=d.get("developer", ""))
     return {"ok": True}
 
 

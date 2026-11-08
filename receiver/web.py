@@ -1,38 +1,19 @@
-"""Password-protected web UI: run the pipeline, browse the inventory, work the review queue."""
-import datetime, hashlib, hmac, json, os, time
-from fastapi import APIRouter, File, Form, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
-from fastapi.templating import Jinja2Templates
-import build, db, facts, history, jobs, mapping, master, master_export, master_schema, media_review, parse_files, \
-    proposals, rows, rules
+"""Server side of the admin app: session cookie, auth, the pipeline step list, stored files, and redirects from
+the old page URLs into the app (/app). All screens live in the React app (frontend/); data comes from api.py."""
+import datetime, hashlib, hmac, os, time
+from urllib.parse import urlencode
+from fastapi import APIRouter, Request
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
+import build, db, facts, history, mapping, media_review, parse_files, proposals, rules
 
 PASSWORD = os.getenv("APP_PASSWORD", "")
 SECRET = (os.getenv("SESSION_SECRET") or PASSWORD or "unset").encode()
 COOKIE = "bridge_session"
-PUBLIC = ("/login", "/health", "/webhook/", "/sync-groups/", "/static/")
+PUBLIC = ("/health", "/webhook/", "/sync-groups/", "/static/")
 DUBAI = datetime.timezone(datetime.timedelta(hours=4))
+XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 router = APIRouter()
-templates = Jinja2Templates(directory=os.path.join(os.path.dirname(__file__), "templates"))
-
-
-def fmt_ts(ts):
-    if not ts:
-        return "—"
-    return datetime.datetime.fromtimestamp(int(ts), DUBAI).strftime("%d %b %Y %H:%M")
-
-
-def fmt_money(v):
-    return "—" if v is None else f"{v:,.0f}" if float(v).is_integer() else f"{v:,.2f}"
-
-
-templates.env.filters["ts"] = fmt_ts
-templates.env.filters["money"] = fmt_money
-templates.env.filters["label"] = lambda s: (s or "").replace("_", " ")
-templates.env.filters["fromjson"] = lambda s: json.loads(s) if s else {}
-templates.env.filters["chat_kind"] = lambda jid: "Group" if (jid or "").endswith("@g.us") else "Private"
-templates.env.globals["market"] = {"name": rules.MARKET_NAME, "short": rules.MARKET_SHORT,
-                                   "currency": rules.CURRENCY, "metric": rules.METRIC_LABEL}
 
 
 def _sign(exp):
@@ -46,42 +27,22 @@ def logged_in(request):
 
 
 def _spa_shell(path):
-    """The new app's HTML/JS/CSS holds no data, so it loads without a session and shows its own login."""
+    """The app's HTML/JS/CSS holds no data, so it loads without a session and shows its own login."""
     return path == "/app" or path.startswith("/app/")
 
 
 async def auth_middleware(request: Request, call_next):
     path = request.url.path
-    if path.startswith(PUBLIC) or path in ("/login", "/api/login", "/api/logout") or _spa_shell(path):
+    if path.startswith(PUBLIC) or path in ("/api/login", "/api/logout") or _spa_shell(path) \
+            or (path in OLD_PAGES or path.startswith(OLD_PREFIXES)) and request.method == "GET":
         return await call_next(request)
     is_api = path.startswith("/api/")
     if not PASSWORD:
         msg = "Set APP_PASSWORD on the receiver service to enable the web app."
         return JSONResponse({"error": "no_password", "detail": msg}, 503) if is_api else HTMLResponse(msg, 503)
     if not logged_in(request):
-        return JSONResponse({"error": "login"}, 401) if is_api else RedirectResponse("/login", 303)
+        return JSONResponse({"error": "login"}, 401) if is_api else RedirectResponse("/app", 303)
     return await call_next(request)
-
-
-def page(request, template, **ctx):
-    with db.connect() as c:
-        ctx["open_issues"] = c.execute("SELECT COUNT(*) FROM review_issues WHERE severity IN ('high','medium')"
-                                       ).fetchone()[0]
-    ctx["job_running"] = jobs.running()
-    return templates.TemplateResponse(request, template, ctx)
-
-
-@router.get("/login", response_class=HTMLResponse)
-def login_form(request: Request, error: str = ""):
-    return templates.TemplateResponse(request, "login.html", {"error": error})
-
-
-@router.post("/login")
-def login(password: str = Form(...)):
-    if not PASSWORD or not hmac.compare_digest(password, PASSWORD):
-        time.sleep(1)
-        return RedirectResponse("/login?error=1", 303)
-    return set_session(RedirectResponse("/", 303))
 
 
 def password_ok(password):
@@ -89,20 +50,13 @@ def password_ok(password):
 
 
 def set_session(r):
-    """Attach a signed 14-day session cookie (shared by the classic pages and /api)."""
+    """Attach a signed 14-day session cookie."""
     exp = int(time.time()) + 14 * 86400
     r.set_cookie(COOKIE, f"{exp}.{_sign(exp)}", max_age=14 * 86400, httponly=True, secure=True, samesite="lax")
     return r
 
 
-@router.get("/logout")
-def logout():
-    r = RedirectResponse("/login", 303)
-    r.delete_cookie(COOKIE)
-    return r
-
-
-# ---------- dashboard & jobs ----------
+# ---------- pipeline steps (run from More > Pipeline) ----------
 STEPS = [
     ("sync_groups", "1. Sync chats", "Fetch the list of groups and private chats from Evolution.",
      history.sync_groups),
@@ -124,88 +78,6 @@ STEPS = [
 STEP_FN = {s[0]: (s[1], s[3]) for s in STEPS}
 
 
-@router.get("/", response_class=HTMLResponse)
-def dashboard(request: Request):
-    with db.connect() as c:
-        recent = c.execute("SELECT * FROM jobs ORDER BY id DESC LIMIT 8").fetchall()
-        counts = {
-            "groups": c.execute("SELECT COUNT(*) FROM groups").fetchone()[0],
-            "in_scope": len(db.scoped_groups(c)),
-            "messages": c.execute("SELECT COUNT(*) FROM source_messages").fetchone()[0],
-            "files": c.execute("SELECT COUNT(*) FROM source_files").fetchone()[0],
-            "projects": c.execute("SELECT COUNT(*) FROM projects").fetchone()[0],
-            "units": c.execute("SELECT COUNT(*) FROM units").fetchone()[0],
-        }
-    return page(request, "dashboard.html", steps=STEPS, recent=recent, counts=counts)
-
-
-@router.post("/reset")
-def reset_all(confirm: str = Form("")):
-    if confirm.strip() != "DELETE ALL" or jobs.running():
-        return RedirectResponse("/?reset=refused", 303)
-    db.reset()
-    return RedirectResponse("/?reset=done", 303)
-
-
-@router.post("/jobs/{name}")
-def start_job(name: str, redo: str = Form("")):
-    if name not in STEP_FN:
-        return RedirectResponse("/", 303)
-    title, fn = STEP_FN[name]
-    args = (True,) if redo and name in ("map_projects", "parse_files", "download_media") else ()
-    job_id = jobs.start(title, fn, *args)
-    return RedirectResponse(f"/jobs/{job_id}" if job_id else "/?busy=1", 303)
-
-
-@router.get("/jobs/{job_id}", response_class=HTMLResponse)
-def job_view(request: Request, job_id: int):
-    with db.connect() as c:
-        job = c.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
-    return page(request, "job.html", job=job)
-
-
-# ---------- groups ----------
-@router.get("/groups", response_class=HTMLResponse)
-def groups(request: Request):
-    with db.connect() as c:
-        gs = c.execute("SELECT g.jid, g.name, COALESCE(s.in_scope,0) in_scope, "
-                       "(SELECT COUNT(*) FROM source_messages m WHERE m.group_jid=g.jid) n, "
-                       "(SELECT MIN(ts) FROM source_messages m WHERE m.group_jid=g.jid) first_ts "
-                       "FROM groups g LEFT JOIN group_scope s ON s.jid=g.jid ORDER BY in_scope DESC, n DESC, g.name").fetchall()
-    return page(request, "groups.html", groups=gs)
-
-
-@router.post("/groups")
-async def save_groups(request: Request):
-    form = await request.form()
-    chosen = set(form.getlist("scope"))
-    with db.connect() as c:
-        for (jid,) in c.execute("SELECT jid FROM groups").fetchall():
-            c.execute("INSERT INTO group_scope(jid,in_scope) VALUES(?,?) ON CONFLICT(jid) DO UPDATE SET "
-                      "in_scope=excluded.in_scope", (jid, 1 if jid in chosen else 0))
-    return RedirectResponse("/groups", 303)
-
-
-@router.get("/groups/{jid}", response_class=HTMLResponse)
-def group_messages(request: Request, jid: str, q: str = "", before: int = 0):
-    sql = "SELECT * FROM source_messages WHERE group_jid=?"
-    args = [jid]
-    if q:
-        sql += " AND (text LIKE ? OR file_name LIKE ? OR sender_name LIKE ?)"
-        args += [f"%{q}%"] * 3
-    if before:
-        sql += " AND ts<?"
-        args.append(before)
-    with db.connect() as c:
-        msgs = c.execute(sql + " ORDER BY ts DESC LIMIT 200", args).fetchall()
-        name = (c.execute("SELECT name FROM groups WHERE jid=?", (jid,)).fetchone() or [jid])[0]
-        files = {r["wa_id"]: r["file_id"] for r in c.execute(
-            "SELECT o.wa_id, o.file_id FROM file_occurrences o JOIN source_messages m ON m.wa_id=o.wa_id "
-            "WHERE m.group_jid=?", (jid,))}
-    return page(request, "messages.html", msgs=msgs, name=name, jid=jid, q=q, files=files)
-
-
-# ---------- inventory ----------
 def fact_summary(rows_):
     """Current display state for one fact type (never filled in when the group is silent)."""
     live = [f for f in rows_ if f["validation_status"] != "rejected"]
@@ -220,18 +92,6 @@ def fact_summary(rows_):
     return {"state": state, "value": latest["parsed_value"] or latest["raw_value"], "items": rows_}
 
 
-@router.get("/projects", response_class=HTMLResponse)
-def projects(request: Request, q: str = ""):
-    with db.connect() as c:
-        ps = c.execute(
-            "SELECT p.slug, p.name, d.name developer, "
-            "(SELECT COUNT(*) FROM project_phases f WHERE f.project_id=p.id) phases, "
-            "(SELECT COUNT(*) FROM units u WHERE u.project_id=p.id) units "
-            "FROM projects p LEFT JOIN developers d ON d.id=p.developer_id "
-            "WHERE p.name LIKE ? ORDER BY p.name", (f"%{q}%",)).fetchall()
-    return page(request, "projects.html", projects=ps, q=q)
-
-
 def latest_snapshots(c, where, args):
     """Most recent observation per unit."""
     return c.execute(
@@ -242,111 +102,8 @@ def latest_snapshots(c, where, args):
         "ORDER BY p.name, u.phase_key, u.unit_code", args).fetchall()
 
 
-@router.get("/projects/{slug}", response_class=HTMLResponse)
-def project(request: Request, slug: str):
-    with db.connect() as c:
-        p = c.execute("SELECT p.*, d.name developer FROM projects p LEFT JOIN developers d ON d.id=p.developer_id "
-                      "WHERE slug=?", (slug,)).fetchone()
-        if not p:
-            return RedirectResponse("/projects", 303)
-        fs = c.execute("SELECT a.* FROM fact_assertions a JOIN fact_links l ON l.fact_id=a.id "
-                       "WHERE l.project_id=? ORDER BY a.observed_ts", (p["id"],)).fetchall()
-        by_type = {}
-        for f in fs:
-            by_type.setdefault(f["fact_type"], []).append(f)
-        key_facts = [(t, fact_summary(by_type.get(t, []))) for t in build.REQUIRED_FACTS]
-        phase_facts = [f for f in by_type.get("phase_status", [])]
-        other = [f for t in ("launch", "unit_status", "other") for f in by_type.get(t, [])]
-        phases = c.execute("SELECT * FROM project_phases WHERE project_id=? ORDER BY raw_label", (p["id"],)).fetchall()
-        units = latest_snapshots(c, "u.project_id=?", (p["id"],))
-        images = c.execute("SELECT m.*, f.id fid FROM media_assignments m JOIN source_files f ON f.id=m.file_id "
-                           "WHERE m.review_state='approved' AND m.project_name IN "
-                           "(SELECT raw_label FROM project_aliases WHERE project_id=? UNION SELECT ?)",
-                           (p["id"], p["name"])).fetchall()
-        history_n = c.execute("SELECT COUNT(*) FROM unit_snapshots s JOIN units u ON u.id=s.unit_id "
-                              "WHERE u.project_id=?", (p["id"],)).fetchone()[0]
-    return page(request, "project.html", p=p, key_facts=key_facts, phase_facts=phase_facts, other=other,
-                phases=phases, units=units, images=images, history_n=history_n)
-
-
-@router.get("/units", response_class=HTMLResponse)
-def units(request: Request, q: str = "", status: str = "", max_price: str = ""):
-    where, args = ["1=1"], []
-    if q:
-        where.append("(u.unit_code LIKE ? OR p.name LIKE ? OR u.phase_key LIKE ? OR s.unit_type_raw LIKE ?)")
-        args += [f"%{q}%"] * 4
-    if status:
-        where.append("s.unit_status=?")
-        args.append(status)
-    with db.connect() as c:
-        res = latest_snapshots(c, " AND ".join(where), args)
-    if max_price.replace(",", "").isdigit():
-        mp = float(max_price.replace(",", ""))
-        res = [r for r in res if r["price_value"] is not None and r["price_value"] <= mp]
-    return page(request, "units.html", units=res[:2000], total=len(res), q=q, status=status, max_price=max_price)
-
-
-@router.get("/units/{unit_id}", response_class=HTMLResponse)
-def unit_history(request: Request, unit_id: int):
-    with db.connect() as c:
-        snaps = c.execute("SELECT s.*, r.file_id, r.sheet, r.row_number, f.file_name FROM unit_snapshots s "
-                          "JOIN source_rows r ON r.id=s.source_row_id JOIN source_files f ON f.id=r.file_id "
-                          "WHERE s.unit_id=? ORDER BY COALESCE(s.snapshot_ts,0) DESC", (unit_id,)).fetchall()
-        u = c.execute("SELECT u.*, p.name project, p.slug FROM units u JOIN projects p ON p.id=u.project_id "
-                      "WHERE u.id=?", (unit_id,)).fetchone()
-    return page(request, "unit.html", u=u, snaps=snaps)
-
-
-@router.post("/facts/{fact_id}")
-def set_fact(fact_id: int, status: str = Form(...), back: str = Form("/")):
-    if status in ("verified_from_source", "needs_validation", "source_stated_unverified", "rejected"):
-        with db.connect() as c:
-            c.execute("UPDATE fact_assertions SET validation_status=? WHERE id=?", (status, fact_id))
-    return RedirectResponse(back, 303)
-
-
-# ---------- review ----------
-@router.get("/review", response_class=HTMLResponse)
-def review(request: Request, kind: str = ""):
-    with db.connect() as c:
-        kinds = c.execute("SELECT issue_type, severity, COUNT(*) n FROM review_issues GROUP BY issue_type, severity "
-                          "ORDER BY CASE severity WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END").fetchall()
-        sql = "SELECT * FROM review_issues"
-        args = ()
-        if kind:
-            sql += " WHERE issue_type=?"
-            args = (kind,)
-        issues = c.execute(sql + " ORDER BY CASE severity WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END, id "
-                           "LIMIT 500", args).fetchall()
-        pending_maps = c.execute("SELECT COUNT(*) FROM label_mappings WHERE review_state='proposed'").fetchone()[0]
-        pending_imgs = c.execute("SELECT COUNT(*) FROM media_assignments WHERE review_state IN ('proposed','withheld')"
-                                 ).fetchone()[0]
-    return page(request, "review.html", kinds=kinds, issues=issues, kind=kind, pending_maps=pending_maps,
-                pending_imgs=pending_imgs)
-
-
-@router.get("/review/mappings", response_class=HTMLResponse)
-def review_mappings(request: Request, state: str = "proposed"):
-    with db.connect() as c:
-        sql = ("SELECT x.*, m.decision, m.developer, m.project_name, m.phase_label, m.confidence, m.rationale, "
-               "m.is_uae, m.source, m.review_state, f.file_name FROM label_contexts x "
-               "LEFT JOIN label_mappings m ON m.context_key=x.key LEFT JOIN source_files f ON f.id=x.file_id ")
-        if state == "all":
-            res = c.execute(sql + "ORDER BY f.file_name, x.sheet").fetchall()
-        elif state == "unmapped":
-            res = c.execute(sql + "WHERE m.context_key IS NULL ORDER BY f.file_name, x.sheet").fetchall()
-        else:
-            res = c.execute(sql + "WHERE m.review_state=? ORDER BY f.file_name, x.sheet", (state,)).fetchall()
-        known = [r[0] for r in c.execute("SELECT DISTINCT project_name FROM label_mappings "
-                                         "WHERE decision='project' AND project_name<>'' ORDER BY 1")]
-    warn = {x["key"]: rules.why_not_a_project(x["project_name"]) for x in res
-            if x["decision"] == "project" and x["project_name"]}
-    return page(request, "mappings.html", contexts=res, state=state, known=known, warn=warn)
-
-
-@router.post("/review/mappings")
-def save_mapping(key: str = Form(...), action: str = Form(...), project_name: str = Form(""),
-                 phase_label: str = Form(""), developer: str = Form(""), back: str = Form("/review/mappings")):
+def save_mapping(key, action, project_name="", phase_label="", developer=""):
+    """Reviewer decision on a table's project mapping (approve, possibly with edits / reject / exclude)."""
     with db.connect() as c:
         cur = c.execute("SELECT * FROM label_mappings WHERE context_key=?", (key,)).fetchone()
         if action == "reject":
@@ -355,80 +112,17 @@ def save_mapping(key: str = Form(...), action: str = Form(...), project_name: st
                       "review_state='rejected', updated_at=excluded.updated_at", (key, int(time.time())))
         elif action == "exclude":
             c.execute("INSERT OR REPLACE INTO label_mappings VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-                      (key, "exclude_scope", "", "", "", "high", f"Reviewer: outside {rules.MARKET_NAME} scope", "no", "reviewer",
-                       "approved", int(time.time())))
-        else:  # approve, possibly with edits
+                      (key, "exclude_scope", "", "", "", "high", f"Reviewer: outside {rules.MARKET_NAME} scope", "no",
+                       "reviewer", "approved", int(time.time())))
+        else:
             c.execute("INSERT OR REPLACE INTO label_mappings VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                       (key, "project", developer.strip() or (cur["developer"] if cur else ""),
                        project_name.strip(), phase_label.strip(), "high",
                        (cur["rationale"] if cur and cur["project_name"] == project_name.strip() else
                         "Set by reviewer"), "yes", "reviewer", "approved", int(time.time())))
-    return RedirectResponse(back, 303)
 
 
-@router.get("/review/context", response_class=HTMLResponse)
-def review_context(request: Request, key: str):
-    with db.connect() as c:
-        x = c.execute("SELECT x.*, f.file_name FROM label_contexts x JOIN source_files f ON f.id=x.file_id "
-                      "WHERE key=?", (key,)).fetchone()
-        m = c.execute("SELECT * FROM label_mappings WHERE context_key=?", (key,)).fetchone()
-        sample = [(r, v) for r, v in rows.data_rows(c, {x["file_id"]}) if rows.context_key(r, v) == key][:50] if x else []
-        layout = c.execute("SELECT * FROM sheet_layouts WHERE file_id=? AND sheet=?",
-                           (x["file_id"], x["sheet"])).fetchone() if x else None
-    return page(request, "context.html", x=x, m=m, sample=sample, layout=layout,
-                evidence=json.loads(x["evidence_json"]) if x else {})
-
-
-@router.post("/layout")
-async def save_layout(request: Request):
-    form = await request.form()
-    file_id, sheet = int(form["file_id"]), form["sheet"]
-    with db.connect() as c:
-        lay = c.execute("SELECT * FROM sheet_layouts WHERE file_id=? AND sheet=?", (file_id, sheet)).fetchone()
-        cols = json.loads(lay["columns_json"])
-        for col in cols:
-            col["role"] = form.get(f"role_{col['index']}") or None
-            col["area_unit"] = form.get(f"unit_{col['index']}", "")
-            col["currency"] = form.get(f"cur_{col['index']}", "")
-        c.execute("UPDATE sheet_layouts SET columns_json=?, source='reviewer' WHERE file_id=? AND sheet=?",
-                  (json.dumps(cols), file_id, sheet))
-    return RedirectResponse(form.get("back", "/review"), 303)
-
-
-@router.get("/review/images", response_class=HTMLResponse)
-def review_images(request: Request, state: str = "proposed"):
-    with db.connect() as c:
-        imgs = c.execute("SELECT m.*, f.file_name FROM media_assignments m JOIN source_files f ON f.id=m.file_id "
-                         "WHERE m.review_state=? ORDER BY m.updated_at DESC LIMIT 200", (state,)).fetchall()
-    return page(request, "images.html", imgs=imgs, state=state)
-
-
-@router.post("/review/images")
-def save_image(file_id: int = Form(...), action: str = Form(...), project_name: str = Form(""),
-               back: str = Form("/review/images")):
-    state = {"approve": "approved", "withhold": "withheld", "exclude": "excluded"}.get(action)
-    if state:
-        with db.connect() as c:
-            if project_name.strip():
-                c.execute("UPDATE media_assignments SET project_name=? WHERE file_id=?", (project_name.strip(), file_id))
-            c.execute("UPDATE media_assignments SET review_state=?, updated_at=? WHERE file_id=?",
-                      (state, int(time.time()), file_id))
-    return RedirectResponse(back, 303)
-
-
-# ---------- sources ----------
-@router.get("/sources", response_class=HTMLResponse)
-def sources(request: Request):
-    with db.connect() as c:
-        files = c.execute("SELECT f.*, (SELECT COUNT(*) FROM file_occurrences o WHERE o.file_id=f.id) posts, "
-                          "(SELECT COUNT(*) FROM source_rows r WHERE r.file_id=f.id) nrows FROM source_files f "
-                          "ORDER BY f.kind, f.file_name").fetchall()
-        failed = c.execute("SELECT f.*, m.file_name, m.ts, m.group_jid FROM media_fetch f "
-                           "JOIN source_messages m ON m.wa_id=f.wa_id WHERE f.status='failed' ORDER BY m.ts DESC"
-                           ).fetchall()
-    return page(request, "sources.html", files=files, failed=failed)
-
-
+# ---------- stored files (opened from the app) ----------
 @router.get("/sources/file/{file_id}")
 def source_file(file_id: int, download: int = 0):
     with db.connect() as c:
@@ -441,125 +135,33 @@ def source_file(file_id: int, download: int = 0):
                         else "attachment")
 
 
-@router.get("/sources/message/{wa_id}", response_class=HTMLResponse)
-def source_message(request: Request, wa_id: str):
-    with db.connect() as c:
-        m = c.execute("SELECT m.*, g.name gname FROM source_messages m LEFT JOIN groups g ON g.jid=m.group_jid "
-                      "WHERE wa_id=?", (wa_id,)).fetchone()
-        near = c.execute("SELECT * FROM source_messages WHERE group_jid=? AND ts BETWEEN ? AND ? ORDER BY ts",
-                         (m["group_jid"], (m["ts"] or 0) - 1800, (m["ts"] or 0) + 1800)).fetchall() if m else []
-        files = {r["wa_id"]: r["file_id"] for r in c.execute("SELECT * FROM file_occurrences")}
-    return page(request, "message.html", m=m, near=near, files=files)
+# ---------- old page URLs: the app maps each one to its new screen ----------
+OLD_PAGES = ("/", "/login", "/logout", "/dashboard", "/feed", "/groups", "/projects", "/units", "/review",
+             "/sources", "/reconciliation", "/master", "/updates")
+OLD_PREFIXES = ("/groups/", "/projects/", "/units/", "/review/", "/sources/message/", "/sources/row/", "/jobs/")
 
 
-@router.get("/sources/row/{row_id}", response_class=HTMLResponse)
-def source_row(request: Request, row_id: int):
-    with db.connect() as c:
-        r = c.execute("SELECT r.*, f.file_name FROM source_rows r JOIN source_files f ON f.id=r.file_id "
-                      "WHERE r.id=?", (row_id,)).fetchone()
-        lay = c.execute("SELECT * FROM sheet_layouts WHERE file_id=? AND sheet=?", (r["file_id"], r["sheet"])
-                        ).fetchone() if r else None
-        header = None
-        if lay:
-            h = c.execute("SELECT raw_json FROM source_rows WHERE file_id=? AND sheet=? AND row_number=? "
-                          "AND kind='sheet_row'", (r["file_id"], r["sheet"], lay["header_row"])).fetchone()
-            header = json.loads(h["raw_json"])["cells"] if h else None
-    return page(request, "row.html", r=r, raw=json.loads(r["raw_json"]) if r else {}, header=header)
+@router.get("/")
+def home():
+    return RedirectResponse("/app", 303)
 
 
-@router.get("/reconciliation", response_class=HTMLResponse)
-def reconciliation(request: Request):
-    with db.connect() as c:
-        rep = build.reconcile(c)
-        per_file = c.execute(
-            "SELECT f.file_name, r.file_id, s.mapping_state, COUNT(*) n FROM unit_snapshots s "
-            "JOIN source_rows r ON r.id=s.source_row_id JOIN source_files f ON f.id=r.file_id "
-            "GROUP BY r.file_id, s.mapping_state ORDER BY f.file_name").fetchall()
-    return page(request, "reconciliation.html", rep=rep, per_file=per_file)
+@router.get("/logout")
+def logout():
+    r = RedirectResponse("/app", 303)
+    r.delete_cookie(COOKIE)
+    return r
 
 
-@router.get("/review/fact/{fact_id}", response_class=HTMLResponse)
-def review_fact(request: Request, fact_id: int):
-    with db.connect() as c:
-        f = c.execute("SELECT * FROM fact_assertions WHERE id=?", (fact_id,)).fetchone()
-    return page(request, "fact.html", f=f)
+def _old(request: Request):
+    path = request.url.path
+    target = "/app" if path in ("/", "/login") else "/app" + path
+    q = urlencode(list(request.query_params.multi_items()))
+    return RedirectResponse(target + (f"?{q}" if q else ""), 303)
 
 
-# ---------- master workbook & proposed updates ----------
-XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-
-
-@router.get("/master", response_class=HTMLResponse)
-def master_page(request: Request, show: str = "open"):
-    with db.connect() as c:
-        imp = master.current_import(c)
-        q = ("SELECT i.*, r.sheet, r.developer, r.project, r.location_code, r.row_number, r.target_sheet "
-             "FROM master_issues i JOIN master_rows r ON r.id=i.row_id ")
-        issues = c.execute(q + ("WHERE i.state='open' " if show == "open" else "") + "ORDER BY i.issue_type, r.sheet, "
-                           "r.row_number").fetchall()
-        counts = {r["state"]: r["n"] for r in c.execute("SELECT state, COUNT(*) n FROM proposals GROUP BY state")}
-    return page(request, "master.html", imp=imp, summary=json.loads(imp["summary_json"] or "{}") if imp else {},
-                issues=issues, show=show, counts=counts, grid_sheets=master_schema.GRID_SHEETS)
-
-
-@router.post("/master/upload")
-async def master_upload(file: UploadFile = File(...)):
-    data = await file.read()
-    if jobs.running():
-        return RedirectResponse("/master?busy=1", 303)
-    try:
-        master.import_workbook(data, file.filename or "master.xlsx")
-    except Exception as e:  # not an xlsx, or unreadable
-        return RedirectResponse(f"/master?error={type(e).__name__}", 303)
-    return RedirectResponse("/master?imported=1", 303)
-
-
-@router.post("/master/issues/{issue_id}")
-def master_issue(issue_id: int, action: str = Form(...), sheet: str = Form("")):
-    master.resolve_issue(issue_id, action, sheet)
-    return RedirectResponse("/master", 303)
-
-
-@router.get("/master/export/{which}")
-def master_export_file(which: str):
-    data = master_export.team_file() if which == "team" else master_export.sql_file() if which == "sql" else None
-    if data is None:
-        return RedirectResponse("/master", 303)
-    day = datetime.datetime.now(DUBAI).strftime("%Y-%m-%d")
-    name = f"App Updates {day}.xlsx" if which == "team" else f"App Updates SQL {day}.xlsx"
-    return Response(data, media_type=XLSX, headers={"Content-Disposition": f'attachment; filename="{name}"'})
-
-
-@router.get("/updates", response_class=HTMLResponse)
-def updates(request: Request, state: str = "proposed", sheet: str = "", q: str = "", match: str = ""):
-    where, args = ["p.state=?"], [state]
-    if sheet:
-        where.append("p.sheet=?")
-        args.append(sheet)
-    if match:
-        where.append("p.match_state=?")
-        args.append(match)
-    if q:
-        where.append("(p.project LIKE ? OR p.developer LIKE ? OR p.matched_label LIKE ?)")
-        args += [f"%{q}%"] * 3
-    with db.connect() as c:
-        items = c.execute("SELECT p.*, r.project AS row_project, r.developer AS row_developer, r.row_number "
-                          "FROM proposals p LEFT JOIN master_rows r ON r.id=p.row_id WHERE " + " AND ".join(where) +
-                          " ORDER BY p.project_key, p.field, p.source_ts DESC LIMIT 500", args).fetchall()
-        counts = {r["state"]: r["n"] for r in c.execute("SELECT state, COUNT(*) n FROM proposals GROUP BY state")}
-        has_master = master.current_import(c) is not None
-    return page(request, "updates.html", items=items, state=state, sheet=sheet, q=q, match=match, counts=counts,
-                sheets=list(master_schema.SHEETS), has_master=has_master)
-
-
-@router.post("/updates/decide")
-async def updates_decide(request: Request):
-    form = await request.form()
-    ids = [int(i) for i in form.getlist("id") if str(i).isdigit()]
-    action = form.get("action", "")
-    if action not in ("approve", "reject"):
-        return RedirectResponse("/updates", 303)
-    done, skipped = master.decide(ids, action, form.get("sheet", ""))
-    back = form.get("back") or "/updates"
-    sep = "&" if "?" in back else "?"
-    return RedirectResponse(f"{back}{sep}done={done}&skipped={len(skipped)}", 303)
+for _p in OLD_PAGES:
+    if _p not in ("/", "/logout"):
+        router.add_api_route(_p, _old, methods=["GET"], include_in_schema=False)
+for _p in OLD_PREFIXES:
+    router.add_api_route(_p + "{rest:path}", _old, methods=["GET"], include_in_schema=False)

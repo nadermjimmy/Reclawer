@@ -24,7 +24,7 @@ WhatsApp groups -> Evolution API (Railway, public) -> receiver (Railway, private
 
 ## Inventory web app
 
-The receiver also serves a password-protected web app that turns the chosen chats' history and attachments
+The receiver also serves a password-protected web app at `/app` (the root URL opens it; old page links redirect into it) that turns the chosen chats' history and attachments
 into a project -> phase/building -> unit inventory with full source tracing. Code: `receiver/` (`web.py`,
 `history.py`, `parse_files.py`, `mapping.py`, `facts.py`, `media_review.py`, `build.py`).
 
