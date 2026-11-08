@@ -125,3 +125,18 @@ def test_api_shows_brain_and_reopens(env):
     r = client.post(f"/api/proposals/{brained[0]['id']}/reopen")
     assert r.status_code == 200
     assert client.post(f"/api/proposals/{brained[0]['id']}/reopen").status_code == 422
+
+
+def test_sheet_view(env):
+    import app
+    from fastapi.testclient import TestClient
+    client = TestClient(app.app, base_url="https://testserver")
+    client.post("/api/login", json={"password": "pw"})
+    r = client.get("/api/sheet", params={"sheet": "New Cairo"}).json()
+    assert r["sheet"] == "New Cairo" and [c["field"] for c in r["columns"]][:3] == ["developer", "project", "location"]
+    zed = next(x for x in r["rows"] if x["cells"]["project"]["master"] == "ZED East")
+    assert zed["cells"]["apartment_2"]["master"] == "125/6,900,000"
+    assert zed["cells"]["apartment_2"].get("approved") or zed["cells"]["apartment_2"].get("pending")
+    changed = client.get("/api/sheet", params={"sheet": "New Cairo", "view": "changed"}).json()
+    assert changed["total"] <= r["total"] and all(x["changes"] or x["pending"] for x in changed["rows"])
+    assert client.get("/api/sheet", params={"sheet": "Sheet 2", "q": "hyde"}).json()["total"] >= 1

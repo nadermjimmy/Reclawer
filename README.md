@@ -132,3 +132,12 @@ rows, and rows this chat has updated before. It:
 
 Every brain decision shows "Approved/Rejected by brain" with its reason and a **Reopen** link. More > Pipeline >
 6c (or "Review Backlog Now" on Updates) reviews the existing backlog.
+
+## Sheet view (check the brain against your own master)
+
+**Sheet** (desktop rail; on phones under More) shows each master sheet as a grid in the workbook's column order.
+"After approvals" shows the values the next export will write; "As uploaded" shows the master you uploaded.
+Approved cells are tinted (darker when the brain approved them), open suggestions have a dashed outline with the
+suggested value under the current one, and suggested new rows appear at the bottom in grey. Click a highlighted
+cell for the master value, the change, the source quote and the brain's reason, and approve, reject or reopen it.
+API: `GET /api/sheet?sheet=&view=all|changed|pending|approved&q=`.

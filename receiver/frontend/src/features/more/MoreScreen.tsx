@@ -1,11 +1,12 @@
 import { ChevronRight, LogOut } from "lucide-react";
 import { Link } from "react-router-dom";
-import { MORE_NAV } from "../../app/nav";
+import { MORE_NAV, PRIMARY_NAV } from "../../app/nav";
 import { useSession } from "../../app/session";
 import { usePageTitle } from "../../app/title";
 import "./more.css";
 
 const DESCRIPTIONS: Record<string, string> = {
+  "/sheet": "The master as a grid, with approved changes and open suggestions",
   "/more/pipeline": "Steps 1 to 8 and 6b, recent runs, Start over",
   "/more/inventory": "Projects, units and unit history",
   "/more/review": "Issues, mappings, images and facts",
@@ -18,7 +19,7 @@ export function MoreScreen() {
   return (
     <div className="page">
       <nav className="more-list card" aria-label="More">
-        {MORE_NAV.map((i) => {
+        {[...PRIMARY_NAV.filter((i) => i.railOnly), ...MORE_NAV].map((i) => {
           const Icon = i.icon;
           const n = i.badge && me ? me.counts[i.badge] : 0;
           return (

@@ -1,0 +1,59 @@
+.sheetview { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.sv-tabs { display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; }
+.sv-tab {
+  flex: none; border: 1px solid var(--hairline); background: var(--white, #fff); color: var(--navy-700, #23376F);
+  border-radius: 999px; padding: 6px 14px; font: inherit; font-weight: 600; cursor: pointer;
+}
+.sv-tab:hover { background: var(--navy-100, rgba(35, 55, 111, 0.06)); }
+.sv-tab.is-active { background: var(--navy-700, #23376F); color: #fff; border-color: var(--navy-700, #23376F); }
+.sv-tab:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(219, 129, 39, 0.35); }
+.sv-toolbar { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; }
+.sv-search { flex: 1 1 220px; max-width: 320px; }
+.sv-legend { display: flex; flex-wrap: wrap; gap: 6px 16px; color: var(--grey-600, #6D6D6D); align-items: center; }
+.sv-key { display: inline-block; width: 12px; height: 12px; border-radius: 3px; vertical-align: -1px; margin-right: 4px; }
+.sv-key.is-approved, .sv-cell.is-approved { background: var(--orange-100, rgba(219, 129, 39, 0.08)); }
+.sv-key.is-brain, .sv-cell.is-brain { background: rgba(219, 129, 39, 0.18); }
+.sv-key.is-pending { border: 1.5px dashed var(--orange-600, #DB8127); }
+.sv-key.is-newrow { background: var(--app-surface-subtle, #F1F5F9); border: 1px solid var(--hairline); }
+
+.sv-wrap { overflow: auto; max-height: calc(100vh - 260px); min-height: 240px; }
+.sv-grid { border-collapse: separate; border-spacing: 0; font-size: 13px; width: max-content; min-width: 100%; }
+.sv-grid th, .sv-grid td {
+  border-right: 1px solid var(--hairline); border-bottom: 1px solid var(--hairline);
+  padding: 0; text-align: left; vertical-align: top; white-space: nowrap; max-width: 220px;
+}
+.sv-grid thead th {
+  position: sticky; top: 0; z-index: 2; background: var(--grey-100, #F3F2F1); color: var(--navy-700, #23376F);
+  font-weight: 700; padding: 8px 10px; font-size: 12px;
+}
+.sv-grid .sv-rownum {
+  position: sticky; left: 0; z-index: 1; background: var(--grey-100, #F3F2F1); color: var(--grey-600, #6D6D6D);
+  padding: 6px 8px; font-weight: 500; min-width: 44px; text-align: right;
+}
+.sv-grid thead .sv-rownum { z-index: 3; }
+.sv-grid .sv-sticky { position: sticky; z-index: 1; background: var(--white, #fff); }
+.sv-grid .sv-developer { left: 44px; min-width: 130px; max-width: 160px; }
+.sv-grid .sv-project { left: 174px; min-width: 170px; max-width: 220px; box-shadow: 2px 0 0 var(--hairline); }
+.sv-grid thead .sv-sticky { z-index: 3; background: var(--grey-100, #F3F2F1); }
+.sv-val { display: block; padding: 6px 10px; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
+.sv-cell.is-pending { box-shadow: inset 0 0 0 1.5px var(--orange-600, #DB8127); }
+.sv-hit { display: block; width: 100%; border: 0; background: transparent; padding: 0; font: inherit; color: inherit; text-align: inherit; cursor: pointer; }
+.sv-hit:focus-visible { outline: none; box-shadow: inset 0 0 0 3px rgba(219, 129, 39, 0.35); }
+.sv-sugg { display: block; padding: 0 10px 6px; color: var(--orange-700, #B5681A); font-weight: 700; overflow: hidden; text-overflow: ellipsis; }
+.sv-grid tr.is-newrow td, .sv-grid tr.is-newrow .sv-sticky { background: var(--app-surface-subtle, #F1F5F9); }
+.sv-grid tr.is-muted td { color: var(--grey-600, #6D6D6D); }
+.sv-grid tbody tr:hover td { background-image: linear-gradient(var(--navy-100, rgba(35, 55, 111, 0.06)), var(--navy-100, rgba(35, 55, 111, 0.06))); }
+
+.sv-detail { display: flex; flex-direction: column; gap: 16px; }
+.sv-values { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; margin: 0; }
+.sv-values div { background: var(--grey-100, #F3F2F1); border-radius: 14px; padding: 10px 12px; }
+.sv-values dd { margin: 2px 0 0; font-variant-numeric: tabular-nums; }
+.sv-change { display: flex; flex-direction: column; gap: 6px; }
+.sv-change .row { display: flex; flex-wrap: wrap; gap: 8px; }
+.sv-brain { display: flex; gap: 6px; align-items: baseline; color: var(--navy-600, #2E468A); }
+.sv-brain svg { color: var(--orange-600, #DB8127); flex: none; align-self: center; }
+@media (max-width: 639px) {
+  .sv-grid .sv-developer { position: static; }
+  .sv-grid .sv-project { left: 44px; min-width: 130px; max-width: 150px; }
+  .sv-wrap { max-height: calc(100vh - 330px); }
+}
