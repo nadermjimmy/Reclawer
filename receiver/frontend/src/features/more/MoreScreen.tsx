@@ -1,4 +1,4 @@
-import { ChevronRight, ExternalLink, LogOut } from "lucide-react";
+import { ChevronRight, LogOut } from "lucide-react";
 import { Link } from "react-router-dom";
 import { MORE_NAV } from "../../app/nav";
 import { useSession } from "../../app/session";
@@ -33,14 +33,6 @@ export function MoreScreen() {
             </Link>
           );
         })}
-        <a href="/" className="more-item">
-          <span className="more-icon"><ExternalLink size={20} aria-hidden="true" /></span>
-          <span className="more-text">
-            <span className="strong">Classic Pages</span>
-            <span className="small muted">The previous admin pages, unchanged</span>
-          </span>
-          <ChevronRight size={18} aria-hidden="true" className="muted" />
-        </a>
         <button type="button" className="more-item" onClick={() => void logout()}>
           <span className="more-icon"><LogOut size={20} aria-hidden="true" /></span>
           <span className="more-text"><span className="strong">Log Out</span></span>

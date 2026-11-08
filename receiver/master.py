@@ -185,9 +185,32 @@ def _sheets_for(field):
     return [s for s, k in ms.SHEETS.items() if k in kinds]
 
 
+# reading order (owner decision): text messages first, then spreadsheets, PDFs, images. A later source only fills a
+# cell that no earlier source filled recently: the cell is empty, or nothing better updated it in the last 14 days.
+SOURCE_RANK = {"message": 0, "row": 1, "pdf_page": 2, "image": 3}
+FRESH_DAYS = 14
+
+
+def _filled_by_better(c, row, sheet, key, field, kind):
+    rank = SOURCE_RANK.get(kind, 0)
+    better = [k for k, r in SOURCE_RANK.items() if r < rank]
+    if not better:
+        return False
+    since = int(time.time()) - FRESH_DAYS * 86400
+    marks = ",".join("?" * len(better))
+    if row is not None:
+        where, args = "row_id=? AND field=?", [row["id"], field]
+    else:
+        where, args = "row_id IS NULL AND sheet=? AND project_key=? AND field=?", [sheet, key, field]
+    return c.execute(f"SELECT 1 FROM proposals WHERE {where} AND state IN ('proposed','approved') "
+                     f"AND source_kind IN ({marks}) AND COALESCE(source_ts,0)>=? LIMIT 1",
+                     args + better + [since]).fetchone() is not None
+
+
 def add_proposal(c, item):
     """item: developer, project, location_code, field, value, quote, source_kind, source_ref, source_ts.
-    Writes one proposal per matched sheet row (or one 'new project' proposal). Returns how many were written."""
+    Writes one proposal per matched sheet row (or one 'new project' proposal). Returns how many were written.
+    Files (rows, PDF pages, images) only fill gaps: see SOURCE_RANK."""
     field = item["field"]
     if field not in ms.ALL_PROPOSABLE or field in ms.NEVER or not item.get("project", "").strip():
         return 0
@@ -209,6 +232,8 @@ def add_proposal(c, item):
     if "Sheet 2" in sheets and "Sheet 2" not in hits and not grid_sheets:
         targets.append(("Sheet 2", None, "new", ""))  # commission / feedback for a project not on Sheet 2
     for sheet, row, state, label in targets:
+        if _filled_by_better(c, row, sheet, key, field, item["source_kind"]):
+            continue  # an earlier source in the reading order already holds a recent value for this cell
         warn = []
         old_raw = ""
         if row is not None:

@@ -120,7 +120,7 @@ def test_propose_and_decide(env, monkeypatch):
     _src(db, "u2", 5100, "New launch Sunset Bay in New Zayed, 3 bed 160/9,000,000, 10% over 8 years")
     _src(db, "u3", 4000, "older: ZED East 2 bed 128/7,000,000")
 
-    def fake(system, content, schema, max_tokens=16000):
+    def fake(system, content, schema, max_tokens=16000, **kw):
         assert "broker team's project sheet" in system
         ups = []
         for m in json.loads(content).get("messages", []):
@@ -210,26 +210,25 @@ def test_issue_resolution_and_pages(env):
     db, master, _ = env
     import app
     client = TestClient(app.app, base_url="https://testserver")
-    client.post("/login", data={"password": "pw"})
+    client.post("/api/login", json={"password": "pw"})
     with db.connect() as c:
         iid = c.execute("SELECT i.id FROM master_issues i JOIN master_rows r ON r.id=i.row_id "
                         "WHERE r.project='Old Coast'").fetchone()[0]
-    r = client.post(f"/master/issues/{iid}", data={"action": "move", "sheet": "New Cairo"}, follow_redirects=False)
-    assert r.status_code == 303
+    r = client.post(f"/api/master/issues/{iid}", json={"action": "move", "sheet": "New Cairo"})
+    assert r.status_code == 200 and r.json()["state"] == "move"
     with db.connect() as c:
         row = c.execute("SELECT * FROM master_rows WHERE project='Old Coast'").fetchone()
         assert row["state"] == "moved" and master.match(c, "Old Coast", "", ["New Cairo"])
-    for path in ["/master", "/master?show=all", "/updates", "/updates?state=approved", "/updates?match=near", "/"]:
-        assert client.get(path).status_code == 200, path
-    assert "6b. Propose sheet updates" in client.get("/").text
-    team = client.get("/master/export/team")
+    for path in ["/master", "/updates?state=approved"]:  # old URLs open the app screen
+        r = client.get(path, follow_redirects=False)
+        assert r.status_code == 303 and r.headers["location"].startswith("/app" + path.split("?")[0]), path
+    assert any(s["key"] == "propose_updates" for s in client.get("/api/steps").json())
+    team = client.get("/api/master/export/team")
     assert team.status_code == 200 and team.headers["content-type"].startswith("application/vnd.openxml")
     assert openpyxl.load_workbook(io.BytesIO(team.content))["New Cairo"].cell(5, 2).value == "Old Coast"
-    assert client.get("/master/export/sql").status_code == 200
-    r = client.post("/updates/decide", data={"id": ["999999"], "action": "approve"}, follow_redirects=False)
-    assert r.status_code == 303
-    r = client.post("/master/upload", files={"file": ("x.xlsx", b"not a workbook")}, follow_redirects=False)
-    assert "error=" in r.headers["location"]
+    assert client.get("/api/master/export/sql").status_code == 200
+    r = client.post("/api/master", files={"file": ("x.xlsx", b"not a workbook")})
+    assert r.status_code == 422 and r.json()["error"] == "unreadable"
 
 
 @pytest.mark.skipif(not os.getenv("MASTER_XLSX"), reason="set MASTER_XLSX to the real workbook to run")

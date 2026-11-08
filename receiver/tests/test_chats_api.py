@@ -201,7 +201,7 @@ def test_sync_chat_end_to_end(client, monkeypatch):
         assert wa_id == "s_doc"
         return {"base64": base64.b64encode(NEW_DOC).decode(), "fileName": "New Zayed prices.xlsx", "mimetype": XLSX}
 
-    def fake_llm(system, content, schema, max_tokens=16000):
+    def fake_llm(system, content, schema, max_tokens=16000, **kw):
         assert "broker team's project sheet" in system
         body = json.loads(content)
         ups = []

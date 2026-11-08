@@ -4,7 +4,7 @@ import { useSession } from "../../app/session";
 import { Button } from "../../components";
 import "./login.css";
 
-/** One field, "Team password". Same 14-day session as the classic pages. */
+/** One field, "Team password". 14-day session. */
 export function LoginScreen() {
   const { login } = useSession();
   const [password, setPassword] = useState("");

@@ -24,7 +24,7 @@ WhatsApp groups -> Evolution API (Railway, public) -> receiver (Railway, private
 
 ## Inventory web app
 
-The receiver also serves a password-protected web app that turns the chosen chats' history and attachments
+The receiver also serves a password-protected web app at `/app` (the root URL opens it; old page links redirect into it) that turns the chosen chats' history and attachments
 into a project -> phase/building -> unit inventory with full source tracing. Code: `receiver/` (`web.py`,
 `history.py`, `parse_files.py`, `mapping.py`, `facts.py`, `media_review.py`, `build.py`).
 
@@ -97,3 +97,23 @@ Sheet 2 feedback. It never touches sales name / contact / number, voice note or 
 Location codes and sheet routing live in `owner_rules_eg.json` (`master_location_codes`,
 `master_location_sheets`). Code: `cell_parse.py`, `master_schema.py`, `master.py`, `proposals.py`,
 `master_export.py`. Test against the real file: `MASTER_XLSX=/path/file.xlsx pytest tests/test_master.py`.
+
+## Reading order (step 6b and Sync now)
+
+Every WhatsApp group is read (private chats only when ticked; a group can be unticked to leave it out).
+Sources are read in this order, and each later one only fills what is still missing:
+
+1. **Text messages** from all those chats (`CLAUDE_MODEL`, default Sonnet 5.5).
+2. **Spreadsheets**: rows read cell by cell, then by `CLAUDE_MODEL`.
+3. **PDFs**: sent whole to Claude (`CLAUDE_FILE_MODEL`, default Opus 5.5), which reads page images plus text, so
+   scanned brochures and tables work. Up to 20 pages per request.
+4. **Images**: read with Claude's vision (`CLAUDE_FILE_MODEL`); price-list screenshots and brochure photos.
+
+"Missing" means: no earlier source in this order gave a value for that project + column in the last 14 days
+(an empty cell counts). A file never overrides a fresh text value; a newer file can refresh a value older than
+14 days. Chat context (caption and nearby messages) is sent with each file only to tell which project it is about.
+
+Step 6b runs through the Message Batches API at half price: one batch per stage, collected by a background
+poller every `INGEST_POLL_SECONDS` (default 60), usually within an hour per stage. **Sync now** on one chat runs
+the same four stages live. Settings: `CLAUDE_EFFORT` (default `medium`), `INGEST_MODE=live` to run 6b without the
+batch queue, `CLAUDE_FALLBACKS=0` to turn off the server-side refusal fallback.

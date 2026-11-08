@@ -1,5 +1,5 @@
 import { AnimatePresence, motion, useReducedMotion, type Variants } from "framer-motion";
-import { Check, FileSpreadsheet, FileText, MessageSquare, X } from "lucide-react";
+import { Check, FileSpreadsheet, FileText, Image as ImageIcon, MessageSquare, X } from "lucide-react";
 import { memo } from "react";
 import type { Proposal } from "../../api/proposals";
 import { Button, IconButton, WarningChip } from "../../components";
@@ -36,8 +36,8 @@ export function groupItems(items: Proposal[]): Group[] {
 
 export function SourceChip({ p }: { p: Proposal }) {
   const s = p.source;
-  const Icon = s.kind === "message" ? MessageSquare : s.kind === "row" ? FileSpreadsheet : FileText;
-  const what = s.kind === "message" ? "Message" : s.kind === "row" ? "File row" : "PDF page";
+  const Icon = s.kind === "message" ? MessageSquare : s.kind === "row" ? FileSpreadsheet : s.kind === "image" ? ImageIcon : FileText;
+  const what = s.kind === "message" ? "Message" : s.kind === "row" ? "File row" : s.kind === "image" ? "Image" : "PDF page";
   const where = s.chat_name || s.file_name || "Unknown chat";
   return (
     <span className="source-chip" title={`${what}${s.file_name ? ` in ${s.file_name}` : ""}${s.chat_name ? `, ${s.chat_name}` : ""}`}>

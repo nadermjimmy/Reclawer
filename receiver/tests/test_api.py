@@ -38,14 +38,16 @@ def test_unauthenticated():
         r = anon.get(path, follow_redirects=False)
         assert r.status_code == 401 and r.json() == {"error": "login"}, path
     assert anon.post("/api/proposals/decide", json={}).status_code == 401
-    r = anon.get("/projects", follow_redirects=False)  # classic pages still redirect
-    assert r.status_code == 303 and r.headers["location"] == "/login"
+    r = anon.get("/projects", follow_redirects=False)  # old page URLs open the matching app screen
+    assert r.status_code == 303 and r.headers["location"] == "/app/projects"
+    assert anon.get("/", follow_redirects=False).headers["location"] == "/app"
+    assert anon.get("/sources/file/1", follow_redirects=False).headers["location"] == "/app"  # files need a session
     assert anon.get("/app/updates").status_code in (200, 503)  # the app shell loads and shows its own login
     assert anon.post("/api/login", json={"password": "nope"}).status_code == 401
     r = anon.post("/api/login", json={"password": "pw"})
     assert r.status_code == 200 and "bridge_session" in r.headers["set-cookie"]
     assert anon.get("/api/me").status_code == 200
-    assert anon.get("/projects").status_code == 200  # same session as the classic pages
+    assert anon.get("/sources/file/999999").status_code == 404  # logged in: file route answers (not found)
     anon.post("/api/logout")
     anon.cookies.clear()
     assert anon.get("/api/me").status_code == 401

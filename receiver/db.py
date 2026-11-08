@@ -115,6 +115,16 @@ CREATE INDEX IF NOT EXISTS ix_prop_row ON proposals(row_id, field, state);
 -- last single-chat sync per chat (Chats > Sync now)
 CREATE TABLE IF NOT EXISTS chat_syncs(jid TEXT PRIMARY KEY, job_id INTEGER, synced_at INTEGER, result_json TEXT);
 
+-- reading order run: text first, then spreadsheets, PDFs, images (each fills only what earlier sources didn't)
+CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
+CREATE TABLE IF NOT EXISTS ingest_runs(
+    id INTEGER PRIMARY KEY, job_id INTEGER, stage INTEGER DEFAULT 0, batch_id TEXT, status TEXT,
+    started_at INTEGER, updated_at INTEGER, totals_json TEXT);
+CREATE TABLE IF NOT EXISTS ingest_items(
+    custom_id TEXT PRIMARY KEY, run_id INTEGER, batch_id TEXT, stage TEXT, label TEXT, sources_json TEXT,
+    keys_json TEXT, state TEXT DEFAULT 'pending');
+CREATE INDEX IF NOT EXISTS ix_ii_run ON ingest_items(run_id, state);
+
 CREATE TABLE IF NOT EXISTS jobs(
     id INTEGER PRIMARY KEY, name TEXT, status TEXT, started_at INTEGER, finished_at INTEGER, log TEXT);
 """
@@ -135,6 +145,10 @@ def init():
         import search
         search.ensure(c)  # FTS5 message index (created once, then caught up with any unindexed rows)
         c.execute("UPDATE jobs SET status='interrupted' WHERE status='running'")  # container restarted mid-job
+        if not c.execute("SELECT 1 FROM meta WHERE key='groups_in_scope_v1'").fetchone():
+            # owner decision: every WhatsApp group is read; private chats stay opt-in. A group can still be unticked.
+            c.execute("UPDATE group_scope SET in_scope=1 WHERE jid LIKE '%@g.us'")
+            c.execute("INSERT INTO meta VALUES('groups_in_scope_v1', '1')")
 
 
 def reset():

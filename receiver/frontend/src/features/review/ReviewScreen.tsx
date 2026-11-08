@@ -82,7 +82,6 @@ function Mappings() {
                     <Button size="sm" variant="secondary" onClick={() => void act(m, "approve")}>Approve</Button>
                     <Button size="sm" variant="ghost" onClick={() => void act(m, "reject")}>Reject</Button>
                     <Button size="sm" variant="ghost" onClick={() => void act(m, "exclude")}>Exclude</Button>
-                    <a className="small" href={`/review/context?key=${encodeURIComponent(String(m.key))}`}>Edit</a>
                   </div>
                 </td>
               </tr>

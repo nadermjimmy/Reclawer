@@ -597,3 +597,12 @@ mark {
     position: static;
   }
 }
+
+.src-image {
+  display: block;
+  max-width: 100%;
+  max-height: 420px;
+  border-radius: var(--radius-md, 14px);
+  background: var(--grey-100, #F3F2F1);
+  object-fit: contain;
+}

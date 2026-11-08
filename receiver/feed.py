@@ -1,4 +1,4 @@
-"""Read-only channel feed: every chat rendered like a WhatsApp channel (JSON API + page)."""
+"""Read-only channel feed data: chats and messages as JSON for the app."""
 import os
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -20,12 +20,6 @@ def kind_of_message(m):
     if t == "documentMessage" or m["file_name"]:
         return history.kind_of(m["file_name"], m["mimetype"]) if m["file_name"] or m["mimetype"] else "document"
     return "text"
-
-
-@router.get("/feed", response_class=HTMLResponse)
-def feed_page(request: Request):
-    from web import page
-    return page(request, "feed.html")
 
 
 @router.get("/api/feed/channels")

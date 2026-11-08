@@ -1,4 +1,4 @@
-/* Straight JSON ports of the classic More pages (inventory, review, sources). Loosely typed on purpose. */
+/* JSON for the More pages (inventory, review, sources). Loosely typed on purpose. */
 import { get, post } from "./client";
 import type { ContextMessage } from "./proposals";
 
@@ -62,5 +62,5 @@ export const sourceMessage = (waId: string) =>
   );
 export const getReconciliation = () => get<ReconciliationReport>("/reconciliation");
 
-/** Original file as stored (classic route; same session cookie). */
+/** Original file as stored (same session cookie). */
 export const fileUrl = (id: number, download = false) => `/sources/file/${id}${download ? "?download=1" : ""}`;

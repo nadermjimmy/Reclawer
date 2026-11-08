@@ -4,7 +4,7 @@ export type ProposalState = "proposed" | "approved" | "rejected" | "superseded";
 export type MatchState = "exact" | "alias" | "near" | "new";
 /** Structured warning codes (receiver/master.py warnings_of). Add new codes there and in WARNING_META. */
 export type WarningCode = "needs_sheet" | "near_match" | "lifts_hold" | "bad_format" | "new_project";
-export type SourceKind = "message" | "row" | "pdf_page";
+export type SourceKind = "message" | "row" | "pdf_page" | "image";
 
 export interface Delta {
   price_from?: number;
@@ -94,7 +94,7 @@ export type SourceContext =
       messages: ContextMessage[];
     }
   | {
-      kind: "row" | "pdf_page";
+      kind: "row" | "pdf_page" | "image";
       missing?: boolean;
       file: { id: number; name: string; kind: string };
       sheet: string;
@@ -106,6 +106,7 @@ export type SourceContext =
       page?: number;
       text?: string;
       truncated?: boolean;
+      image_url?: string;
     };
 
 export interface ProposalDetail extends Proposal {
