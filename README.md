@@ -64,6 +64,10 @@ app data (type `DELETE ALL`); WhatsApp and Evolution are not touched.
 images, and spreadsheets/PDFs that open in a built-in viewer (sheet tabs, row filter, exact cell values).
 Attachments not downloaded yet are fetched from Evolution as you scroll to them; the feed refreshes every 15 s.
 
+**New app (`/app`):** a React rebuild of the admin pages (Updates, Master, More > Pipeline / Inventory /
+Review / Sources; Chats and Insights coming next), on the JSON API in `receiver/api.py` (`/api/*`, same login).
+Source and dev notes: `receiver/frontend/README.md`. The Docker image builds it; the classic pages keep working.
+
 **Tests:** `cd receiver && pip install -r requirements.txt pytest && python -m pytest tests`
 
 ## Notes
