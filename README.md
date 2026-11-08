@@ -70,3 +70,26 @@ Attachments not downloaded yet are fetched from Evolution as you scroll to them;
 - Back up the Evolution instance volume; losing it means re-scanning the QR.
 - Keep the dedicated phone online at least every few days or WhatsApp unlinks devices.
 - Stay listen-only until stable. Tell group members the number logs messages.
+
+## Master workbook updates (App Updates sheet)
+
+The team's **App Updates** workbook is the target output. Upload it on **Master**; the app reads New Cairo,
+Sokhna&new zayed, New Capital (price grids), Sheet 2 (commission) and Separated update. Other sheets are kept
+untouched in the export.
+
+1. **Master** -> upload the .xlsx. Rows whose location doesn't belong to their sheet (October / North Coast
+   only on Sokhna, unknown codes such as `L`, `de`, `oman`) are listed under "Rows to place": Move / Keep / Drop.
+2. Dashboard step **6b. Propose sheet updates (Claude)** reads new messages, workbook rows and PDF pages.
+   Claude only reads values in the sheet's notation; matching, sheet routing and the old-vs-new comparison
+   are done in code (`master.py`). Only changed values become proposals; the newest quote per cell wins.
+3. **Updates** -> approve / reject. Approving writes today's date on the row (on Sheet 2 this replaces
+   Hide/Hold). A near name match ("Jirian" -> "Jiran") is saved as an alias when approved.
+4. **Master** -> download the **Team file** (your workbook with approved values in the same cells, payment
+   plans normalised to `10% - 8Y`, new projects appended) or the **SQL-ready file** (typed split columns +
+   a `units` sheet). Upload the team file back as the new master once it's been shared.
+
+Ingestion may propose: location, Ready To Move, unit-type cells, payment plan, commission (number + `net`),
+Sheet 2 feedback. It never touches sales name / contact / number, voice note or ID.
+Location codes and sheet routing live in `owner_rules_eg.json` (`master_location_codes`,
+`master_location_sheets`). Code: `cell_parse.py`, `master_schema.py`, `master.py`, `proposals.py`,
+`master_export.py`. Test against the real file: `MASTER_XLSX=/path/file.xlsx pytest tests/test_master.py`.

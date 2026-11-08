@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block body %}
+<h1>Master workbook</h1>
+{% if request.query_params.get('imported') %}<p class="ok">Master imported. Earlier open proposals were closed as superseded; run step 6b again to compare with this file.</p>{% endif %}
+{% if request.query_params.get('error') %}<p class="err">Couldn't read that file ({{ request.query_params.get('error') }}). Upload the .xlsx exported from the team sheet.</p>{% endif %}
+{% if request.query_params.get('busy') %}<p class="err">A pipeline step is running. Upload again when it has finished.</p>{% endif %}
+{% if imp %}
+<p>Current master: <b>{{ imp.file_name }}</b> <span class="muted">imported {{ imp.imported_at|ts }}</span></p>
+<div class="stats">
+{% for sheet, n in summary.sheets.items() %}<div><b>{{ n }}</b>{{ sheet }}</div>{% endfor %}
+<div><b>{{ counts.get('proposed', 0) }}</b><a href="/updates">updates to review</a></div>
+<div><b>{{ counts.get('approved', 0) }}</b>approved</div>
+</div>
+<p class="muted small">Not read (left exactly as they are in the export): {{ summary.ignored_sheets|join(', ') or 'none' }}.
+{% if summary.unknown_headers %}Columns not recognised: {% for s, h in summary.unknown_headers.items() %}{{ s }}: {{ h|join(', ') }}. {% endfor %}{% endif %}
+{{ summary.legacy_duplicates }} Sokhna&amp;new zayed rows for October / North Coast are older copies of New Cairo rows; the New Cairo row is used.</p>
+<h2>Download</h2>
+<div class="cards">
+  <a class="card" href="/master/export/team"><b>Team file</b><br><span class="small muted">Your master with approved changes in the same cells, payment plans as “10% - 8Y”, new projects added at the bottom of their sheet.</span></a>
+  <a class="card" href="/master/export/sql"><b>SQL-ready file</b><br><span class="small muted">Same rows split into typed columns (area, price, status, down payment %, years, commission, net) plus one row per project and unit type.</span></a>
+</div>
+<h2>Rows to place ({{ issues|length }})</h2>
+<div class="filters"><a href="?show=open" class="{% if show == 'open' %}active{% endif %}">Open</a><a href="?show=all" class="{% if show == 'all' %}active{% endif %}">All</a></div>
+<p class="muted small">Until you decide, these rows are not updated from chats. Move = updates go to the chosen sheet and the project is added there in the team file (the original row is left as it is).</p>
+<table>
+<tr><th>Sheet / row</th><th>Developer</th><th>Project</th><th>Location</th><th>Why</th><th></th></tr>
+{% for i in issues %}
+<tr><td>{{ i.sheet }} · {{ i.row_number }}</td><td>{{ i.developer }}</td><td>{{ i.project }}</td><td>{{ i.location_code or '—' }}</td>
+<td>{{ i.reason }}</td>
+<td>{% if i.state == 'open' %}<form method="post" action="/master/issues/{{ i.id }}" class="row">
+  <select name="sheet">{% for s in grid_sheets %}<option {% if s == i.target_sheet %}selected{% endif %}>{{ s }}</option>{% endfor %}</select>
+  <button name="action" value="move" class="small">Move</button>
+  <button name="action" value="keep" class="small">Keep here</button>
+  <button name="action" value="drop" class="small">Drop</button></form>
+{% else %}<span class="muted">{{ i.state }}</span>{% endif %}</td></tr>
+{% else %}<tr><td colspan="6" class="muted">Nothing to place.</td></tr>{% endfor %}
+</table>
+{% else %}
+<p class="muted">No master yet. Upload the team's “App Updates” workbook (.xlsx). The app reads New Cairo, Sokhna&amp;new zayed,
+New Capital, Sheet 2 and Separated update; other sheets are kept untouched in the export.</p>
+{% endif %}
+<h2>{% if imp %}Replace master{% else %}Upload master{% endif %}</h2>
+<form method="post" action="/master/upload" enctype="multipart/form-data" class="row">
+<input type="file" name="file" accept=".xlsx" required><button>Upload</button></form>
+{% if imp %}<p class="muted small">Upload the latest team file after you've applied an export, so new proposals compare against it. Open proposals are closed when you replace the master.</p>{% endif %}
+{% endblock %}

@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block body %}
+<h1>Sheet updates</h1>
+{% if not has_master %}<p class="err">Upload the master workbook on the <a href="/master">Master</a> page first.</p>{% endif %}
+{% if request.query_params.get('done') %}<p class="ok">{{ request.query_params.get('done') }} updated.
+{% if request.query_params.get('skipped') != '0' %}<span class="err">{{ request.query_params.get('skipped') }} skipped: new projects need a sheet.</span>{% endif %}</p>{% endif %}
+<div class="filters">
+{% for st in ['proposed','approved','rejected','superseded'] %}<a href="?state={{ st }}" class="{% if state == st %}active{% endif %}">{{ st|capitalize }} ({{ counts.get(st, 0) }})</a>{% endfor %}
+</div>
+<form method="get" class="row">
+<input type="hidden" name="state" value="{{ state }}">
+<select name="sheet"><option value="">All sheets</option>{% for s in sheets %}<option {% if s == sheet %}selected{% endif %}>{{ s }}</option>{% endfor %}</select>
+<select name="match"><option value="">Any match</option>{% for m in ['exact','alias','near','new'] %}<option {% if m == match %}selected{% endif %}>{{ m }}</option>{% endfor %}</select>
+<input name="q" value="{{ q }}" placeholder="Project or developer"><button class="secondary">Filter</button></form>
+<form method="post" action="/updates/decide">
+<input type="hidden" name="back" value="{{ request.url.path }}?{{ request.url.query }}">
+<table>
+<tr>{% if state == 'proposed' %}<th><input type="checkbox" onclick="document.querySelectorAll('input[name=id]').forEach(b=>b.checked=this.checked)" aria-label="Select all"></th>{% endif %}
+<th>Sheet / row</th><th>Project</th><th>Column</th><th>Now</th><th>Proposed</th><th>Source</th><th>Notes</th></tr>
+{% for p in items %}
+<tr>{% if state == 'proposed' %}<td><input type="checkbox" name="id" value="{{ p.id }}" aria-label="Select"></td>{% endif %}
+<td>{{ p.sheet or '?' }}{% if p.row_number %} · {{ p.row_number }}{% elif p.match_state == 'new' %} · <b>new</b>{% endif %}</td>
+<td>{{ p.row_project or p.project }}{% if p.row_developer or p.developer %}<div class="small muted">{{ p.row_developer or p.developer }}</div>{% endif %}
+{% if p.match_state == 'near' %}<div class="small warn">chat: {{ p.project }}</div>{% endif %}</td>
+<td>{{ p.field|label }}</td>
+<td>{{ p.old_raw or '—' }}</td><td><b>{{ p.new_raw }}</b></td>
+<td class="small">{% if p.source_kind == 'message' %}<a href="/sources/message/{{ p.source_ref }}">message</a>{% else %}<a href="/sources/row/{{ p.source_ref }}">{{ 'file row' if p.source_kind == 'row' else 'document page' }}</a>{% endif %}
+<span class="muted">{{ p.source_ts|ts }}</span>{% if p.quote %}<div class="muted">“{{ p.quote }}”</div>{% endif %}</td>
+<td class="small warn">{{ p.warning }}{% if p.decided_at %}<div class="muted">decided {{ p.decided_at|ts }}</div>{% endif %}</td></tr>
+{% else %}<tr><td colspan="8" class="muted">Nothing here. Run step 6b on the dashboard after new messages arrive.</td></tr>{% endfor %}
+</table>
+{% if state == 'proposed' and items %}
+<div class="row">
+<label class="small">Sheet for new projects without a location
+<select name="sheet"><option value="">—</option>{% for s in sheets %}<option>{{ s }}</option>{% endfor %}</select></label>
+<button name="action" value="approve">Approve selected</button>
+<button name="action" value="reject" class="secondary">Reject selected</button>
+</div>
+<p class="muted small">Approving writes today's date on the row. On Sheet 2 this replaces Hide/Hold in the Date column.
+Approving a near match saves the chat name as an alias, so it matches automatically next time.</p>
+{% endif %}
+</form>
+{% endblock %}

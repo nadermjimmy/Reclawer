@@ -4,6 +4,7 @@ import os, sqlite3
 DB = os.getenv("DB_PATH", "/data/messages.db")
 DATA_DIR = os.path.dirname(DB) or "."
 MEDIA_DIR = os.path.join(DATA_DIR, "media")
+MASTER_DIR = os.path.join(DATA_DIR, "master")
 
 SCHEMA = """
 -- digest tables (kept as before)
@@ -84,6 +85,33 @@ CREATE TABLE IF NOT EXISTS review_issues(
     id INTEGER PRIMARY KEY, issue_type TEXT, severity TEXT, ref_kind TEXT, ref_id TEXT,
     reason TEXT, detail_json TEXT);
 
+-- master 'App Updates' workbook (uploaded by the owner) and the cell-level updates proposed from chats.
+-- Not touched by build.rebuild.
+CREATE TABLE IF NOT EXISTS master_imports(
+    id INTEGER PRIMARY KEY, file_name TEXT, sha256 TEXT, path TEXT, imported_at INTEGER, summary_json TEXT);
+CREATE TABLE IF NOT EXISTS master_sheets(
+    import_id INTEGER NOT NULL, sheet TEXT NOT NULL, title TEXT NOT NULL, kind TEXT, columns_json TEXT,
+    PRIMARY KEY(import_id, sheet));
+CREATE TABLE IF NOT EXISTS master_rows(
+    id INTEGER PRIMARY KEY, import_id INTEGER, sheet TEXT NOT NULL, kind TEXT, row_number INTEGER,
+    developer TEXT, project TEXT, project_key TEXT, location_code TEXT, state TEXT DEFAULT 'active',
+    target_sheet TEXT, note TEXT, created_at INTEGER);
+CREATE INDEX IF NOT EXISTS ix_mr_key ON master_rows(project_key);
+CREATE TABLE IF NOT EXISTS master_cells(
+    row_id INTEGER NOT NULL, field TEXT NOT NULL, raw_text TEXT, parsed_json TEXT, PRIMARY KEY(row_id, field));
+CREATE TABLE IF NOT EXISTS master_aliases(alias_key TEXT PRIMARY KEY, project_key TEXT, label TEXT,
+    confirmed_at INTEGER);
+CREATE TABLE IF NOT EXISTS master_issues(
+    id INTEGER PRIMARY KEY, import_id INTEGER, row_id INTEGER, issue_type TEXT, reason TEXT,
+    state TEXT DEFAULT 'open', decided_at INTEGER);
+CREATE TABLE IF NOT EXISTS proposals(
+    id INTEGER PRIMARY KEY, row_id INTEGER, sheet TEXT, developer TEXT, project TEXT, project_key TEXT,
+    field TEXT NOT NULL, old_raw TEXT, new_raw TEXT, new_parsed_json TEXT, quote TEXT, source_kind TEXT,
+    source_ref TEXT, source_ts INTEGER, match_state TEXT, matched_label TEXT, location_code TEXT,
+    state TEXT DEFAULT 'proposed', warning TEXT, created_at INTEGER, decided_at INTEGER,
+    UNIQUE(source_kind, source_ref, sheet, project_key, field, new_raw));
+CREATE INDEX IF NOT EXISTS ix_prop_row ON proposals(row_id, field, state);
+
 CREATE TABLE IF NOT EXISTS jobs(
     id INTEGER PRIMARY KEY, name TEXT, status TEXT, started_at INTEGER, finished_at INTEGER, log TEXT);
 """
@@ -112,11 +140,12 @@ def reset():
         c.execute("PRAGMA foreign_keys=OFF")
         for t in tables:
             c.execute(f"DELETE FROM {t}")
-    if os.path.isdir(MEDIA_DIR):
-        for name in os.listdir(MEDIA_DIR):
-            path = os.path.join(MEDIA_DIR, name)
-            if os.path.isfile(path):
-                os.remove(path)
+    for folder in (MEDIA_DIR, MASTER_DIR):
+        if os.path.isdir(folder):
+            for name in os.listdir(folder):
+                path = os.path.join(folder, name)
+                if os.path.isfile(path):
+                    os.remove(path)
     c = sqlite3.connect(DB)
     c.execute("VACUUM")
     c.close()
