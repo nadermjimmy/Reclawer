@@ -270,25 +270,38 @@ def _done(keys):
 
 
 # ---------- live ----------
+LIVE_WORKERS = int(os.getenv("CLAUDE_WORKERS", "6"))
+
+
 def run_stage_live(log, stage, jids=None):
-    """Returns (proposals written, failed requests)."""
+    """Answer one stage's requests now, several at a time. Returns (proposals written, failed requests)."""
+    from concurrent.futures import ThreadPoolExecutor, as_completed
     with db.connect() as c:
         units = BUILDERS[stage](c, jids)
     if units:
         log(f"{dict(STAGES)[stage]}: {len(units)} request(s)")
     written = failed = 0
-    for u in units:
-        if u["content"] is not None:
+    empty = [u for u in units if u["content"] is None]
+    _done([k for u in empty for k in u["keys"]])
+    units = [u for u in units if u["content"] is not None]
+
+    def ask(u):
+        return llm.call_json(SYSTEM, u["content"], SCHEMA, model=u["model"])["updates"]
+
+    with ThreadPoolExecutor(LIVE_WORKERS) as pool:
+        futures = {pool.submit(ask, u): u for u in units}
+        for f in as_completed(futures):  # results are stored one at a time, in this thread
+            u = futures[f]
             try:
-                out = llm.call_json(SYSTEM, u["content"], SCHEMA, model=u["model"])["updates"]
+                out = f.result()
             except Exception as e:
                 log(f"{u['label']} failed: {e}")
                 failed += 1
                 continue
             n = _store(u["sources"], out)
             written += n
+            _done(u["keys"])
             log(f"{u['label']}: {n} suggestion(s)")
-        _done(u["keys"])
     return written, failed
 
 
@@ -337,6 +350,10 @@ def _advance(run_id):
                 _set_run(c, run_id, status="done", batch_id=None)
                 c.execute("UPDATE jobs SET status='done', finished_at=? WHERE id=?", (int(time.time()), run["job_id"]))
                 done = True
+            elif run["stage"] >= 1 and jobs.running():
+                # files are still being downloaded/read by the job that started this run: read them afterwards
+                _set_run(c, run_id, status="files_pending", batch_id=None)
+                return
             else:
                 done = False
                 stage, label = STAGES[run["stage"]]
@@ -411,7 +428,16 @@ def _collect(run):
 def poll(log=None):
     """Collect finished batches and submit the next stage. Safe to call repeatedly (poller thread, tests)."""
     with db.connect() as c:
+        resume = [] if jobs.running() else \
+            [r["id"] for r in c.execute("SELECT id FROM ingest_runs WHERE status='files_pending'")]
         runs = c.execute("SELECT * FROM ingest_runs WHERE status='waiting'").fetchall()
+    for run_id in resume:
+        try:
+            _advance(run_id)
+        except Exception as e:
+            with db.connect() as c:
+                run = c.execute("SELECT * FROM ingest_runs WHERE id=?", (run_id,)).fetchone()
+            _run_log(run)(f"Couldn't start the file stages, will retry: {e}")
     for run in runs:
         try:
             status, _ = llm.batch_status(run["batch_id"])
@@ -426,7 +452,8 @@ def poll(log=None):
 def start_batched(log):
     """Step 6b in batched mode: start a run and return; the poller does the rest."""
     with db.connect() as c:
-        if c.execute("SELECT 1 FROM ingest_runs WHERE status='waiting' OR (status='running' AND updated_at>?)",
+        if c.execute("SELECT 1 FROM ingest_runs WHERE status IN ('waiting','files_pending') "
+                     "OR (status='running' AND updated_at>?)",
                      (int(time.time()) - 900,)).fetchone():
             log("A full read is already in progress; its results arrive on the Updates page as each stage ends.")
             return
@@ -436,10 +463,8 @@ def start_batched(log):
         "Sent through the batch queue at half price.")
     _advance(run_id)
     with db.connect() as c:
-        if c.execute("SELECT status FROM ingest_runs WHERE id=?", (run_id,)).fetchone()[0] == "waiting":
-            # keep the job row open (not 'running': that would read as a job holding the lock)
-            c.execute("UPDATE jobs SET status='waiting' WHERE id=?", (log.job_id,))
-            jobs.keep_open(log.job_id)
+        if c.execute("SELECT status FROM ingest_runs WHERE id=?", (run_id,)).fetchone()[0] != "done":
+            jobs.keep_open(log.job_id)  # the job row stays 'waiting' until the last stage's results are in
 
 
 def start_poller(seconds):

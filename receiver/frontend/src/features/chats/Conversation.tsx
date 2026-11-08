@@ -13,7 +13,7 @@ import { Avatar } from "./ChatList";
 import type { ChatSyncState } from "./useChatSync";
 
 const PAGE = 60;
-const STAGES = ["Messages", "Files", "Reading", "Suggestions"];
+const STAGES = ["Messages", "Text suggestions", "Files", "File suggestions"];
 
 export interface ConversationHandle {
   /** Scroll to a message (loading the page around it when needed) and highlight it for 2 s. */

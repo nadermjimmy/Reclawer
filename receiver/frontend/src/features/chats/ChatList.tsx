@@ -1,7 +1,7 @@
-import { FileText, Image as ImageIcon, MessagesSquare, SearchX, Users } from "lucide-react";
+import { FileText, Image as ImageIcon, MessagesSquare, RefreshCw, SearchX, Users } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { search as apiSearch, type Chat, type ChatFilter, type SearchResults } from "../../api/chats";
-import { Chip, EmptyState, ErrorBanner, Marked, SearchInput, Skeleton } from "../../components";
+import { Button, Chip, ConfirmDialog, EmptyState, ErrorBanner, Marked, SearchInput, Skeleton } from "../../components";
 import { fmtDate } from "../../lib/format";
 import { useDelayed } from "../../lib/hooks";
 import { initials, matchesAll, rangesIn, textDir, tokens } from "../../lib/text";
@@ -72,7 +72,8 @@ type Flat = { kind: "chat"; jid: string } | { kind: "message"; jid: string; wa_i
 
 /** Left pane: search (focus with "/"), filter chips and the chat list. With 2+ characters typed, the list shows
     grouped results (chats, then messages) from /api/search; Enter opens the chat at that message. */
-export function ChatList({ chats, loading, error, onRetry, activeJid, filter, onFilter, query, onQuery, onOpenChat, onOpenMessage, searchRef }: {
+export function ChatList({ chats, loading, error, onRetry, activeJid, filter, onFilter, query, onQuery, onOpenChat, onOpenMessage, searchRef,
+  onSyncAll }: {
   chats: Chat[] | undefined;
   loading: boolean;
   error: string | null;
@@ -85,7 +86,10 @@ export function ChatList({ chats, loading, error, onRetry, activeJid, filter, on
   onOpenChat: (jid: string) => void;
   onOpenMessage: (jid: string, waId: string) => void;
   searchRef: RefObject<HTMLInputElement | null>;
+  onSyncAll: (mode: "batch" | "live") => void;
 }) {
+  const [syncAll, setSyncAll] = useState(false);
+  const [mode, setMode] = useState<"batch" | "live">("batch");
   const toks = useMemo(() => tokens(query), [query]);
   const searching = query.trim().length >= 2 && toks.length > 0;
   const all = chats ?? [];
@@ -159,7 +163,28 @@ export function ChatList({ chats, loading, error, onRetry, activeJid, filter, on
               count={f.key === "all" ? undefined : applyFilter(all, f.key).length}>{f.label}</Chip>
           ))}
         </div>
+        <Button size="sm" variant="secondary" className="clist-syncall" onClick={() => setSyncAll(true)}>
+          <RefreshCw size={14} aria-hidden="true" /> Sync All Chats
+        </Button>
       </div>
+      <ConfirmDialog open={syncAll} title="Sync all chats" confirmLabel="Sync All Chats"
+        onCancel={() => setSyncAll(false)} onConfirm={() => { setSyncAll(false); onSyncAll(mode); }}>
+        <p>Every group, plus private chats you ticked. Text suggestions come first; photos, PDFs and spreadsheets are
+          downloaded and read after, and only fill what the text didn't give.</p>
+        <fieldset className="syncall-modes">
+          <legend className="sr-only">Speed</legend>
+          <label className="syncall-mode">
+            <input type="radio" name="syncall-mode" checked={mode === "batch"} onChange={() => setMode("batch")} />
+            <span><b>Half price</b><span className="small muted">Claude reads through the batch queue. Suggestions arrive
+              stage by stage, usually within an hour.</span></span>
+          </label>
+          <label className="syncall-mode">
+            <input type="radio" name="syncall-mode" checked={mode === "live"} onChange={() => setMode("live")} />
+            <span><b>Fast</b><span className="small muted">Read now, at full price. Suggestions appear as each chat's
+              text is read.</span></span>
+          </label>
+        </fieldset>
+      </ConfirmDialog>
       <div className="clist-body" ref={listRef} role="list" aria-label={searching ? "Search results" : "Chats"}>
         {error && !chats && <div className="clist-pad"><ErrorBanner onRetry={onRetry}>Couldn't load chats.</ErrorBanner></div>}
         {skeleton && Array.from({ length: 8 }, (_, i) => (

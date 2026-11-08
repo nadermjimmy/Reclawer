@@ -43,10 +43,12 @@ def start(name, fn, *args):
             log(f"ERROR: {e}")
             log(traceback.format_exc(limit=3))
         finally:
-            if status == "failed" or job_id not in _open:
-                with db.connect() as c:
+            with db.connect() as c:
+                if status == "failed" or job_id not in _open:
                     c.execute("UPDATE jobs SET status=?, finished_at=? WHERE id=?",
                               (status, int(time.time()), job_id))
+                else:  # handed off to background work (batched read) that marks it done
+                    c.execute("UPDATE jobs SET status='waiting' WHERE id=? AND status='running'", (job_id,))
             _open.discard(job_id)
             _lock.release()
 
@@ -60,8 +62,10 @@ def run_now(name, fn, *args):
         job_id = c.execute("INSERT INTO jobs(name,status,started_at,log) VALUES(?,?,?,'')",
                            (name, "running", int(time.time()))).lastrowid
     fn(Log(job_id), *args)
-    if job_id not in _open:
-        with db.connect() as c:
+    with db.connect() as c:
+        if job_id not in _open:
             c.execute("UPDATE jobs SET status='done', finished_at=? WHERE id=?", (int(time.time()), job_id))
+        else:
+            c.execute("UPDATE jobs SET status='waiting' WHERE id=? AND status='running'", (job_id,))
     _open.discard(job_id)
     return job_id

@@ -16,7 +16,7 @@ interface JobsApi {
   /** Open the log drawer for a job. */
   openJob: (id: number) => void;
   /** Start a pipeline step by key; opens its log. Returns the job id, or null when busy (a toast explains). */
-  startStep: (key: string, opts?: { redo?: boolean; title?: string; openLog?: boolean }) => Promise<number | null>;
+  startStep: (key: string, opts?: { redo?: boolean; title?: string; openLog?: boolean; body?: Record<string, unknown> }) => Promise<number | null>;
   /** Run `job.start` as soon as no job is running. Part 2 uses this for "Sync when free" on a chat. */
   queueWhenFree: (job: QueuedJob) => void;
   queued: QueuedJob | null;
@@ -44,9 +44,9 @@ export function JobsProvider({ children }: { children: ReactNode }) {
   const openJob = useCallback((id: number) => setOpenId(id), []);
 
   const startStep = useCallback(
-    async (key: string, opts: { redo?: boolean; title?: string; openLog?: boolean } = {}) => {
+    async (key: string, opts: { redo?: boolean; title?: string; openLog?: boolean; body?: Record<string, unknown> } = {}) => {
       try {
-        const { job_id } = await apiStart(key, opts.redo);
+        const { job_id } = await apiStart(key, opts.redo, opts.body);
         void refresh();
         if (opts.openLog !== false) setOpenId(job_id);
         return job_id;

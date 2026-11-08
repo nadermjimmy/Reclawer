@@ -7,6 +7,7 @@ WRAPPERS = ("ephemeralMessage", "viewOnceMessage", "viewOnceMessageV2", "documen
 MEDIA_KINDS = {"imageMessage": "image", "documentMessage": "document", "videoMessage": "video",
                "audioMessage": "audio", "stickerMessage": "sticker"}
 DOWNLOAD_KINDS = ("image", "document")
+DOWNLOAD_WORKERS = int(os.getenv("DOWNLOAD_WORKERS", "6"))
 
 
 def unwrap(msg):
@@ -168,11 +169,11 @@ def save_file(c, wa_id, content, file_name, mimetype):
         path = os.path.join(db.MEDIA_DIR, sha + ext.lower())
         with open(path, "wb") as f:
             f.write(content)
-        file_id = c.execute(
-            "INSERT INTO source_files(sha256,file_name,mimetype,size,path,kind,ingested_at) "
-            "VALUES(?,?,?,?,?,?,?)",
-            (sha, file_name, mimetype, len(content), path, kind_of(file_name, mimetype),
-             int(time.time()))).lastrowid
+        # OR IGNORE: the same file can arrive in two posts that download at the same time
+        c.execute("INSERT OR IGNORE INTO source_files(sha256,file_name,mimetype,size,path,kind,ingested_at) "
+                  "VALUES(?,?,?,?,?,?,?)",
+                  (sha, file_name, mimetype, len(content), path, kind_of(file_name, mimetype), int(time.time())))
+        file_id = c.execute("SELECT id FROM source_files WHERE sha256=?", (sha,)).fetchone()[0]
     c.execute("INSERT OR IGNORE INTO file_occurrences(wa_id,file_id,file_name) VALUES(?,?,?)",
               (wa_id, file_id, file_name))
     return file_id
@@ -219,16 +220,22 @@ def download_media(log, retry_failed=False, jids=None):
         if not retry_failed:
             q += " AND wa_id NOT IN (SELECT wa_id FROM media_fetch WHERE status='failed')"
         todo = c.execute(q, scoped).fetchall()
-    ok = failed = skipped = 0
-    for r in todo:
-        if MEDIA_KINDS.get(r["message_type"]) not in DOWNLOAD_KINDS:
-            skipped += 1
-            continue
-        try:
-            fetch_media(r["wa_id"])
-            ok += 1
-        except Exception:
-            failed += 1
+    wanted = [r["wa_id"] for r in todo if MEDIA_KINDS.get(r["message_type"]) in DOWNLOAD_KINDS]
+    skipped = len(todo) - len(wanted)
+    ok = failed = 0
+    if wanted:
+        log(f"Downloading {len(wanted)} attachment(s), {DOWNLOAD_WORKERS} at a time")
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    with ThreadPoolExecutor(DOWNLOAD_WORKERS) as pool:  # Evolution answers one media request at a time per call
+        futures = [pool.submit(fetch_media, wa) for wa in wanted]
+        for i, f in enumerate(as_completed(futures), 1):
+            try:
+                f.result()
+                ok += 1
+            except Exception:
+                failed += 1
+            if i % 25 == 0 or i == len(futures):
+                log(f"downloaded {i}/{len(futures)} attachments")
     log(f"Attachments: {ok} downloaded, {failed} unavailable (listed on the Sources page), "
         f"{skipped} video/audio skipped")
     return ok, failed

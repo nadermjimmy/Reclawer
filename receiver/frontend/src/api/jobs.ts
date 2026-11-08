@@ -46,7 +46,8 @@ export interface PipelineInfo {
 
 export const listSteps = () => get<Step[]>("/steps");
 export const listJobs = (limit = 8) => get<JobSummary[]>("/jobs", { limit });
-export const startJob = (key: string, redo = false) => post<{ job_id: number }>(`/jobs/${key}`, { redo });
+export const startJob = (key: string, redo = false, extra: Record<string, unknown> = {}) =>
+  post<{ job_id: number }>(`/jobs/${key}`, { redo, ...extra });
 export const getJob = (id: number, since = 0) => get<JobDetail>(`/jobs/${id}`, { since });
 export const getPipeline = () => get<PipelineInfo>("/pipeline");
 export const resetAll = (confirm: string) => post<{ ok: true }>("/reset", { confirm });
