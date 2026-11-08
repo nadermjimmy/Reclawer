@@ -193,7 +193,7 @@ def list_proposals(state: str = "proposed", sheet: str = "", match: str = "", q:
 
 # ---------- sheet view: the master as a grid, with approved changes and open suggestions overlaid ----------
 @router.get("/sheet")
-def sheet_view(sheet: str = "", view: str = "all", q: str = "", offset: int = 0, limit: int = 300):
+def sheet_view(sheet: str = "", view: str = "all", q: str = "", offset: int = 0, limit: int = 3000):
     """view: all | changed (rows with an approved change or an open suggestion) | pending | approved."""
     with db.connect() as c:
         imp = master.current_import(c)
@@ -203,8 +203,10 @@ def sheet_view(sheet: str = "", view: str = "all", q: str = "", offset: int = 0,
             "SELECT sheet, columns_json FROM master_sheets WHERE import_id=?", (imp["id"],))}
         sheet = sheet if sheet in sheets else next((s for s in ms.SHEETS if s in sheets), "")
         cols = sorted(sheets.get(sheet, {}).items(), key=lambda kv: kv[1])
+        from openpyxl.utils import get_column_letter
         columns = [{"field": f, "label": {"developer": "Developer", "project": "Project"}.get(f, field_label(f)),
-                    "col": n, "proposable": f in ms.ALL_PROPOSABLE and f not in ms.NEVER} for f, n in cols]
+                    "col": n, "letter": get_column_letter(n),
+                    "proposable": f in ms.ALL_PROPOSABLE and f not in ms.NEVER} for f, n in cols]
         all_rows = [r for r in c.execute("SELECT * FROM master_rows WHERE state<>'dropped' ORDER BY "
                                          "COALESCE(row_number, 1e9), id").fetchall() if master.home_sheet(r) == sheet]
         ids = [r["id"] for r in all_rows]
@@ -248,6 +250,10 @@ def sheet_view(sheet: str = "", view: str = "all", q: str = "", offset: int = 0,
                     cell["pending"] = change(pend[-1], "pending", len(pend))
                     row["pending"] += 1
                 row["cells"][f] = cell
+            if "date" in row["cells"] and row["changes"]:  # an approval writes today's date on the row (export rule)
+                day = master.approval_date(c, r["id"])
+                if day:
+                    row["cells"]["date"]["current"] = day.isoformat()
             out_rows.append(row)
         # suggested new rows (no sheet row yet) for this sheet
         new_rows = {}
@@ -279,7 +285,7 @@ def sheet_view(sheet: str = "", view: str = "all", q: str = "", offset: int = 0,
         out_rows = [r for r in out_rows if key in cp.normalize_project_key(
             (r["cells"].get("project", {}).get("master") or "") + (r["cells"].get("developer", {}).get("master") or ""))]
     total = len(out_rows)
-    limit = max(1, min(limit, 1000))
+    limit = max(1, min(limit, 5000))
     return {"sheet": sheet, "sheets": [s for s in ms.SHEETS if s in sheets], "columns": columns, "counts": counts,
             "total": total, "offset": offset, "rows": out_rows[offset:offset + limit],
             "next_offset": offset + limit if offset + limit < total else None}
