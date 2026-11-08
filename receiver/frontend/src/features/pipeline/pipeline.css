@@ -1,0 +1,90 @@
+.pipeline {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s4);
+}
+.routine-body {
+  display: flex;
+  align-items: center;
+  gap: var(--s4);
+  flex-wrap: wrap;
+}
+.routine-icon {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: var(--orange-100);
+  color: var(--orange-700);
+  display: grid;
+  place-items: center;
+  flex: none;
+}
+.routine-text {
+  flex: 1 1 260px;
+  min-width: 0;
+}
+.pipeline-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+  gap: var(--s4);
+  align-items: start;
+}
+@media (max-width: 1023px) {
+  .pipeline-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+.steps-help {
+  margin-bottom: var(--s3);
+}
+.steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.step {
+  display: flex;
+  gap: var(--s3);
+  align-items: center;
+  padding: var(--s3) 0;
+  border-top: 1px solid var(--hairline);
+  flex-wrap: wrap;
+}
+.step:first-child {
+  border-top: 0;
+}
+.step-text {
+  flex: 1 1 260px;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.step-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  margin-left: auto;
+}
+.check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  min-height: 32px;
+}
+.check input {
+  accent-color: var(--orange);
+  width: 16px;
+  height: 16px;
+}
+.nowrap {
+  white-space: nowrap;
+}
+.danger-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s3);
+}
+.danger-card .card-head {
+  margin-bottom: 0;
+}
