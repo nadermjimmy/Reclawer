@@ -1,7 +1,7 @@
 """Password-protected web UI: run the pipeline, browse the inventory, work the review queue."""
 import datetime, hashlib, hmac, json, os, time
 from fastapi import APIRouter, File, Form, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 import build, db, facts, history, jobs, mapping, master, master_export, master_schema, media_review, parse_files, \
     proposals, rows, rules
@@ -45,14 +45,21 @@ def logged_in(request):
     return exp.isdigit() and int(exp) > time.time() and hmac.compare_digest(sig, _sign(exp))
 
 
+def _spa_shell(path):
+    """The new app's HTML/JS/CSS holds no data, so it loads without a session and shows its own login."""
+    return path == "/app" or path.startswith("/app/")
+
+
 async def auth_middleware(request: Request, call_next):
     path = request.url.path
-    if path.startswith(PUBLIC) or path == "/login":
+    if path.startswith(PUBLIC) or path in ("/login", "/api/login", "/api/logout") or _spa_shell(path):
         return await call_next(request)
+    is_api = path.startswith("/api/")
     if not PASSWORD:
-        return HTMLResponse("Set APP_PASSWORD on the receiver service to enable the web app.", 503)
+        msg = "Set APP_PASSWORD on the receiver service to enable the web app."
+        return JSONResponse({"error": "no_password", "detail": msg}, 503) if is_api else HTMLResponse(msg, 503)
     if not logged_in(request):
-        return RedirectResponse("/login", 303)
+        return JSONResponse({"error": "login"}, 401) if is_api else RedirectResponse("/login", 303)
     return await call_next(request)
 
 
@@ -74,8 +81,16 @@ def login(password: str = Form(...)):
     if not PASSWORD or not hmac.compare_digest(password, PASSWORD):
         time.sleep(1)
         return RedirectResponse("/login?error=1", 303)
+    return set_session(RedirectResponse("/", 303))
+
+
+def password_ok(password):
+    return bool(PASSWORD) and hmac.compare_digest(password or "", PASSWORD)
+
+
+def set_session(r):
+    """Attach a signed 14-day session cookie (shared by the classic pages and /api)."""
     exp = int(time.time()) + 14 * 86400
-    r = RedirectResponse("/", 303)
     r.set_cookie(COOKIE, f"{exp}.{_sign(exp)}", max_age=14 * 86400, httponly=True, secure=True, samesite="lax")
     return r
 
