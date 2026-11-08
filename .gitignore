@@ -7,3 +7,7 @@ __pycache__/
 digests.log
 .venv/
 .DS_Store
+
+# new admin app (receiver/frontend)
+receiver/frontend/node_modules/
+receiver/frontend/dist/

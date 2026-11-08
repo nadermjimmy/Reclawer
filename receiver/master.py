@@ -257,24 +257,66 @@ def _supersede(c, pid):
         c.execute("UPDATE proposals SET state='superseded' WHERE id=?", (old["id"],))
 
 
+WARNING_CODES = ("needs_sheet", "near_match", "lifts_hold", "bad_format", "new_project")
+
+
+def warnings_of(p):
+    """Structured warnings for one proposal row: [(code, text)]. Derived from the stored row, so the
+    `warning` text written by add_proposal stays as it is. Codes: needs_sheet (blocks approval until a sheet
+    is chosen), near_match, lifts_hold, bad_format, new_project (informational)."""
+    texts = [t.strip() for t in (p["warning"] or "").split(";") if t.strip()]
+    find = lambda word: next((t for t in texts if word in t), "")
+    out = []
+    if p["match_state"] == "new" and p["row_id"] is None and not p["sheet"]:
+        out.append(("needs_sheet", find("choose the sheet") or "New project with no known location: choose the sheet"))
+    if p["match_state"] == "near":
+        out.append(("near_match", find("Near match") or
+                    f"Near match: chat says '{p['project']}', sheet has '{p['matched_label']}'"))
+    if find("Hold/Hide"):
+        out.append(("lifts_hold", find("Hold/Hide")))
+    parsed = json.loads(p["new_parsed_json"] or "{}")
+    if find("sheet format") or (p["new_parsed_json"] and not parsed.get("ok")):
+        out.append(("bad_format", find("sheet format") or "Value doesn't follow the sheet format"))
+    if p["match_state"] == "new" and p["sheet"]:
+        out.append(("new_project", f"New row on {p['sheet']}"))
+    return out
+
+
+def warning_codes(p):
+    return [code for code, _ in warnings_of(p)]
+
+
 def decide(ids, action, sheet=""):
-    """Approve or reject proposals. Returns (done, skipped_reasons)."""
-    done, skipped = 0, []
+    """Approve or reject proposals. `sheet` is one sheet for every new project, or {id: sheet} per proposal.
+    Returns (done, skipped_reasons)."""
+    done, skipped = decide_detail(ids, action, sheet)
+    return len(done), [s["reason"] for s in skipped if s["state"] == "proposed"]
+
+
+def decide_detail(ids, action, sheet=""):
+    """Like decide, but returns ([done ids], [{id, reason, state}]). A proposal that is no longer open (decided
+    elsewhere, or superseded by an approval earlier in the same batch) is skipped with its current state."""
+    done, skipped = [], []
     now = int(time.time())
     with db.connect() as c:
         for pid in ids:
             p = c.execute("SELECT * FROM proposals WHERE id=? AND state='proposed'", (pid,)).fetchone()
             if not p:
+                st = c.execute("SELECT state FROM proposals WHERE id=?", (pid,)).fetchone()
+                skipped.append({"id": pid, "reason": f"already {st[0]}" if st else "not found",
+                                "state": st[0] if st else None})
                 continue
             if action == "reject":
                 c.execute("UPDATE proposals SET state='rejected', decided_at=? WHERE id=?", (now, pid))
-                done += 1
+                done.append(pid)
                 continue
             row_id = p["row_id"]
             if row_id is None:
-                target = p["sheet"] or sheet
+                chosen = sheet.get(pid, "") if isinstance(sheet, dict) else sheet
+                target = p["sheet"] or chosen
                 if not target or target not in ms.SHEETS:
-                    skipped.append(f"{p['project']}: choose a sheet for the new project")
+                    skipped.append({"id": pid, "reason": f"{p['project']}: choose a sheet for the new project",
+                                    "state": "proposed"})
                     continue
                 row_id = _new_row(c, target, p, now)
             elif p["match_state"] == "near":
@@ -285,7 +327,7 @@ def decide(ids, action, sheet=""):
             # older open proposals for the same cell are outdated now
             c.execute("UPDATE proposals SET state='superseded' WHERE state='proposed' AND row_id=? AND field=? "
                       "AND COALESCE(source_ts,0)<=?", (row_id, p["field"], p["source_ts"] or 0))
-            done += 1
+            done.append(pid)
     return done, skipped
 
 

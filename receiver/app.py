@@ -2,7 +2,7 @@
 import os, re, sqlite3, time
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.staticfiles import StaticFiles
-import db as store, evolution, feed, history, web
+import api, db as store, evolution, feed, history, web
 
 DB = os.getenv("DB_PATH", "/data/messages.db")
 TOKEN = os.environ["WEBHOOK_TOKEN"]
@@ -34,6 +34,8 @@ app.middleware("http")(web.auth_middleware)
 app.mount("/static", StaticFiles(directory=os.path.join(os.path.dirname(__file__), "static")), name="static")
 app.include_router(web.router)
 app.include_router(feed.router)
+app.include_router(api.router)      # JSON API for the new app
+app.include_router(api.spa_router)  # the new app itself at /app (works without a build: shows a note)
 
 @app.post("/webhook/{token}")
 async def webhook(token: str, request: Request):

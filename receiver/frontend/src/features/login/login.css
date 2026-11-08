@@ -1,0 +1,27 @@
+.login {
+  min-height: 100%;
+  display: grid;
+  place-items: center;
+  padding: var(--s4);
+  background: var(--chrome);
+}
+.login-card {
+  width: min(400px, 100%);
+  background: var(--card);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-raised);
+  padding: var(--s6);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s4);
+}
+.login-error {
+  color: var(--negative);
+  font-size: var(--fs-small);
+  font-weight: 600;
+}
+@media (max-width: 639px) {
+  .login-card {
+    padding: var(--s5);
+  }
+}

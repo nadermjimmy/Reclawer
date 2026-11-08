@@ -9,7 +9,7 @@
   // ---------- helpers ----------
   async function api(url, opts) {
     const r = await fetch(url, opts);
-    if (r.redirected && r.url.includes("/login")) { location.href = "/login"; throw new Error("signed out"); }
+    if (r.status === 401 || (r.redirected && r.url.includes("/login"))) { location.href = "/login"; throw new Error("signed out"); }
     const body = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(body.error || r.statusText);
     return body;

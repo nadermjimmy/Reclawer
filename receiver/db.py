@@ -112,6 +112,9 @@ CREATE TABLE IF NOT EXISTS proposals(
     UNIQUE(source_kind, source_ref, sheet, project_key, field, new_raw));
 CREATE INDEX IF NOT EXISTS ix_prop_row ON proposals(row_id, field, state);
 
+-- last single-chat sync per chat (Chats > Sync now)
+CREATE TABLE IF NOT EXISTS chat_syncs(jid TEXT PRIMARY KEY, job_id INTEGER, synced_at INTEGER, result_json TEXT);
+
 CREATE TABLE IF NOT EXISTS jobs(
     id INTEGER PRIMARY KEY, name TEXT, status TEXT, started_at INTEGER, finished_at INTEGER, log TEXT);
 """
@@ -129,14 +132,18 @@ def connect():
 def init():
     with connect() as c:
         c.executescript(SCHEMA)
+        import search
+        search.ensure(c)  # FTS5 message index (created once, then caught up with any unindexed rows)
         c.execute("UPDATE jobs SET status='interrupted' WHERE status='running'")  # container restarted mid-job
 
 
 def reset():
     """Delete every message, file, decision and inventory row, and the downloaded media. Schema stays."""
     with connect() as c:
+        import search
+        # FTS5 keeps its own shadow tables (<name>_data, _config, ...); clearing the virtual table clears them
         tables = [r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table' "
-                                          "AND name NOT LIKE 'sqlite_%'")]
+                                          "AND name NOT LIKE 'sqlite_%' AND name NOT LIKE ?", (search.FTS + "_%",))]
         c.execute("PRAGMA foreign_keys=OFF")
         for t in tables:
             c.execute(f"DELETE FROM {t}")

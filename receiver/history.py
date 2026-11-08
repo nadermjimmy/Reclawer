@@ -1,6 +1,6 @@
 """Pull group history and attachments from Evolution into the immutable source tables."""
 import base64, hashlib, json, mimetypes, os, re, time
-import db, evolution
+import db, evolution, search
 
 WRAPPERS = ("ephemeralMessage", "viewOnceMessage", "viewOnceMessageV2", "documentWithCaptionMessage",
             "editedMessage")
@@ -62,13 +62,16 @@ def parse_record(rec, origin):
 
 
 def store_message(c, row):
-    """Insert once; a message already stored is never overwritten."""
+    """Insert once; a message already stored is never overwritten. New rows go into the search index too."""
     if not row:
         return False
     cols = ",".join(row)
     cur = c.execute(f"INSERT OR IGNORE INTO source_messages({cols}) VALUES({','.join('?' * len(row))})",
                     tuple(row.values()))
-    return cur.rowcount == 1
+    if cur.rowcount == 1:
+        search.index_row(c, cur.lastrowid, row)
+        return True
+    return False
 
 
 def sync_groups(log):
@@ -114,13 +117,16 @@ def sync_groups(log):
     log(f"{n_groups} groups and {n_private} private chats found. Tick the inventory chat(s) on the Chats page.")
 
 
-def pull_history(log, only_scoped=True):
-    """Copy stored history for the ticked chats (new messages arrive through the webhook)."""
-    with db.connect() as c:
-        jids = db.scoped_groups(c) if only_scoped else [r[0] for r in c.execute("SELECT jid FROM groups")]
+def pull_history(log, only_scoped=True, jids=None):
+    """Copy stored history for the ticked chats (new messages arrive through the webhook), or only `jids`.
+    Returns how many new messages were stored."""
+    if jids is None:
+        with db.connect() as c:
+            jids = db.scoped_groups(c) if only_scoped else [r[0] for r in c.execute("SELECT jid FROM groups")]
     if not jids:
         log("No chats ticked yet - run 'Sync chats', then tick the inventory chat(s) on the Chats page.")
-        return
+        return 0
+    total = 0
     for jid in jids:
         new = seen = 0
         page, pages = 1, 1
@@ -132,6 +138,8 @@ def pull_history(log, only_scoped=True):
                     new += store_message(c, parse_record(rec, "history"))
             page += 1
         log(f"{jid}: {seen} messages read, {new} new")
+        total += new
+    return total
 
 
 def kind_of(name, mimetype):
@@ -198,13 +206,13 @@ def fetch_media(wa_id):
         raise
 
 
-def download_media(log, retry_failed=False):
-    """Fetch images and documents posted in the in-scope groups."""
+def download_media(log, retry_failed=False, jids=None):
+    """Fetch images and documents posted in the in-scope groups (or only in `jids`). Returns (ok, failed)."""
     with db.connect() as c:
-        scoped = db.scoped_groups(c)
+        scoped = db.scoped_groups(c) if jids is None else list(jids)
         if not scoped:
             log("No chats ticked. Tick the inventory chat(s) on the Chats page first.")
-            return
+            return 0, 0
         q = ("SELECT wa_id, message_type, file_name, mimetype FROM source_messages m WHERE has_media=1 "
              f"AND group_jid IN ({','.join('?' * len(scoped))}) "
              "AND wa_id NOT IN (SELECT wa_id FROM file_occurrences)")
@@ -223,3 +231,4 @@ def download_media(log, retry_failed=False):
             failed += 1
     log(f"Attachments: {ok} downloaded, {failed} unavailable (listed on the Sources page), "
         f"{skipped} video/audio skipped")
+    return ok, failed
