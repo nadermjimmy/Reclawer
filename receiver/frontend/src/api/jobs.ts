@@ -14,10 +14,14 @@ export interface JobSummary extends RunningJob {
   finished_at: number | null;
 }
 
+/** From the last `PROGRESS {json}` log line. Pipeline steps log {stage: text, done, total}; a chat sync logs
+    {stage: n, of: 4, label, done, total} so the Chats stepper knows which of its four stages is active. */
 export interface JobProgress {
-  stage: string;
+  stage: string | number;
   done: number;
   total: number;
+  of?: number;
+  label?: string;
 }
 
 export interface JobDetail extends JobSummary {

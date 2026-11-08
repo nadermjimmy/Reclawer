@@ -5,9 +5,10 @@ import { InventoryScreen, ProjectScreen } from "../features/inventory/InventoryS
 import { LoginScreen } from "../features/login/LoginScreen";
 import { MasterScreen } from "../features/master/MasterScreen";
 import { MoreScreen } from "../features/more/MoreScreen";
+import { ChatsScreen } from "../features/chats/ChatsScreen";
+import { InsightsScreen } from "../features/insights/InsightsScreen";
 import { CommandPalette } from "../features/palette";
 import { PipelineScreen } from "../features/pipeline/PipelineScreen";
-import { ChatsPlaceholder, InsightsPlaceholder } from "../features/placeholders/Placeholders";
 import { ReviewScreen } from "../features/review/ReviewScreen";
 import { SourcesScreen } from "../features/sources/SourcesScreen";
 import { UpdatesScreen } from "../features/updates/UpdatesScreen";
@@ -67,9 +68,9 @@ function Gate() {
         <Route element={<Shell />}>
           <Route index element={<Navigate to="/updates" replace />} />
           <Route path="updates" element={<UpdatesScreen />} />
-          <Route path="chats" element={<ChatsPlaceholder />} />
-          <Route path="chats/:jid" element={<ChatsPlaceholder />} />
-          <Route path="insights" element={<InsightsPlaceholder />} />
+          <Route path="chats" element={<ChatsScreen />} />
+          <Route path="chats/:jid" element={<ChatsScreen />} />
+          <Route path="insights" element={<InsightsScreen />} />
           <Route path="master" element={<MasterScreen />} />
           <Route path="more" element={<MoreScreen />} />
           <Route path="more/pipeline" element={<PipelineScreen />} />

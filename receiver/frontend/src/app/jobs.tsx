@@ -189,7 +189,7 @@ function JobDrawer({ id, onClose, onFinished }: { id: number | null; onClose: ()
           {p && (
             <div className="progress" aria-label="Progress">
               <div className="row small">
-                <span className="ellipsis" dir="auto">{p.stage}</span>
+                <span className="ellipsis" dir="auto">{p.label ?? p.stage}</span>
                 <span className="spacer" />
                 <span className="tnum muted">{p.done} / {p.total}</span>
               </div>

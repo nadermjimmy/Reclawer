@@ -8,6 +8,9 @@ import { MORE_NAV, PRIMARY_NAV, type NavItem } from "./nav";
 import { useSession } from "./session";
 import { usePageTitleValue } from "./title";
 
+/** Route fade key: a new screen fades in; moving between chats keeps the Chats screen mounted. */
+const routeKey = (path: string) => (path.startsWith("/chats") ? "/chats" : path.split("/").slice(0, 3).join("/"));
+
 function useBadge(item: NavItem) {
   const { me, pendingDecisions } = useSession();
   if (!item.badge || !me) return 0;
@@ -86,7 +89,7 @@ export function Shell() {
           </div>
         </header>
         <main className="content" id="content">
-          <motion.div key={location.pathname.split("/").slice(0, 3).join("/")} className="route" variants={routeFade}
+          <motion.div key={routeKey(location.pathname)} className="route" variants={routeFade}
             initial="initial" animate="animate">
             <Outlet />
           </motion.div>

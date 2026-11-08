@@ -74,6 +74,13 @@ export function MasterScreen() {
   const [focus, setFocus] = useState(0);
   const dropTimers = useRef(new Map<number, number>());
 
+  // /master#rows-to-place and #upload (Insights, command palette) scroll to that card once it renders
+  const loaded = Boolean(info.data);
+  useEffect(() => {
+    const id = window.location.hash.slice(1);
+    if (loaded && id) window.requestAnimationFrame(() => document.getElementById(id)?.scrollIntoView({ block: "start" }));
+  }, [loaded]);
+
   useEffect(() => {
     const on = () => void info.reload();
     window.addEventListener(JOB_FINISHED, on);
@@ -169,7 +176,7 @@ export function MasterScreen() {
   }
 
   const uploadCard = (
-    <Card eyebrow={m.import ? "Replace" : "Start here"} title={m.import ? "Upload a New Master" : "Upload the App Updates Workbook"}>
+    <Card id="upload" eyebrow={m.import ? "Replace" : "Start here"} title={m.import ? "Upload a New Master" : "Upload the App Updates Workbook"}>
       <div className="stack">
         {!m.import && (
           <p className="small muted">
@@ -267,7 +274,7 @@ export function MasterScreen() {
       )}
 
       {m.import && (
-        <Card eyebrow="Rows to place" title={show === "open" ? `${fmtNumber(list.length)} Open` : `${fmtNumber(list.length)} Rows, ${fmtNumber(m.rows_to_place)} Open`}
+        <Card id="rows-to-place" eyebrow="Rows to place" title={show === "open" ? `${fmtNumber(list.length)} Open` : `${fmtNumber(list.length)} Rows, ${fmtNumber(m.rows_to_place)} Open`}
           actions={<Segmented label="Show" size="sm" value={show} onChange={setShow}
             items={[{ key: "open", label: "Open" }, { key: "all", label: "All" }]} />}>
           <p className="small muted place-help">

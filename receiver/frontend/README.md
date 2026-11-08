@@ -27,15 +27,17 @@ Dependencies are pinned to exact versions; update them deliberately and commit `
 ```
 src/
   api/            typed client (client.ts) + one module per resource: session, proposals, master, jobs,
-                  legacy (inventory/review/sources), chats + insights (stubs for part 2)
+                  legacy (inventory/review/sources), chats (list, messages, search, sync), insights
   app/            App.tsx (routes + legacy redirects), Shell.tsx (rail, top bar, tab bar), session.tsx
                   (/api/me polling, login), jobs.tsx (job pill, log drawer, startStep, queueWhenFree),
                   nav.ts (navigation items + badges), title.tsx (usePageTitle)
   components/     shared UI: Button/IconButton/ButtonLink, Pill/StatePill, Chip/WarningChip (WARNING_META),
                   Card/Stat, Toast, Drawer, ConfirmDialog, KeyboardHelp, Segmented, Select/SearchInput,
                   EmptyState/ErrorBanner/InfoBanner, Skeleton, Table
-  features/<screen>/   one folder per screen (+ its css)
-  lib/            format.ts (numbers with units, dates, relTime), hooks.ts (useLoad, useHotkeys, useDelayed, ...)
+  features/<screen>/   one folder per screen (+ its css); chats/ (list | conversation | suggestions panel,
+                  useChatSync), insights/, palette/ (Ctrl/⌘K)
+  lib/            format.ts (numbers with units, dates, relTime), hooks.ts (useLoad, useHotkeys, useDelayed, ...),
+                  text.ts (Arabic-aware normalise/match/highlight, same rules as receiver/search.py)
   motion.ts       motion tokens + Framer Motion variants (120/200/360 ms, no springs)
   styles/         tokens.css, base.css, components.css
 ```
