@@ -1,5 +1,5 @@
 import {
-  ArrowDown, ArrowLeft, ChevronDown, ChevronUp, Download, FileSpreadsheet, FileText, Image as ImageIcon, Lightbulb,
+  ArrowDown, ArrowLeft, Building2, ChevronDown, ChevronUp, Download, FileSpreadsheet, FileText, Image as ImageIcon, Lightbulb,
   PanelRightClose, PanelRightOpen, RefreshCw, Search, X,
 } from "lucide-react";
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -10,6 +10,7 @@ import { elapsed, fmtDate, plural, relTime } from "../../lib/format";
 import { useDelayed, useTick } from "../../lib/hooks";
 import { rangesIn, tokens } from "../../lib/text";
 import { Avatar } from "./ChatList";
+import { ProfileDrawer } from "./ProfileDrawer";
 import type { ChatSyncState } from "./useChatSync";
 
 const PAGE = 60;
@@ -243,6 +244,9 @@ export const Conversation = forwardRef<ConversationHandle, {
   onReviewNew: () => void;
 }>(function Conversation({ chat, sync, around, phone, panelMode, panelOpen, openCount, onBack, onTogglePanel, onScope, onMarker, onReviewNew }, ref) {
   const toast = useToast();
+  const [profileOpen, setProfileOpen] = useState(false);
+  const [developer, setDeveloper] = useState(chat.developer ?? "");
+  useEffect(() => setDeveloper(chat.developer ?? ""), [chat.jid, chat.developer]);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [hasMore, setHasMore] = useState(false);
   const [hasNewer, setHasNewer] = useState(false);
@@ -428,6 +432,11 @@ export const Conversation = forwardRef<ConversationHandle, {
             <span className="switch-track" aria-hidden="true"><span className="switch-thumb" /></span>
             <span className="small">Inventory chat</span>
           </label>
+          <button type="button" className="dev-chip" onClick={() => setProfileOpen(true)}
+            title="Developer profile: whose group this is and how they share data">
+            <Building2 size={13} aria-hidden="true" />
+            <span className="small ellipsis" dir="auto">{developer || "Set developer"}</span>
+          </button>
           {busy && (
             <span className="caption muted ellipsis" title="One job runs at a time">
               Busy: <span dir="auto">{sync.busyWith?.name}</span> · <span className="tnum">{elapsed(sync.busyWith?.started_at)}</span>
@@ -437,6 +446,8 @@ export const Conversation = forwardRef<ConversationHandle, {
           {chat.new_since_sync ? <span className="caption muted tnum">{plural(chat.new_since_sync, "message")} since the last sync</span> : null}
         </div>
         <SyncStrip sync={sync} onRetry={sync.start} />
+        <ProfileDrawer jid={chat.jid} chatName={chat.name} open={profileOpen} onClose={() => setProfileOpen(false)}
+          onSaved={setDeveloper} />
         {searchOpen && (
           <ChatSearchBar jid={jid} onJump={jumpTo} onClose={() => { setSearchOpen(false); setHitToks([]); setCurrentHit(null); }}
             onTokens={(t, cur) => { setHitToks(t); setCurrentHit(cur); }} />

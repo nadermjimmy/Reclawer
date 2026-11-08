@@ -15,7 +15,7 @@ Two ways to run the same stages:
   what the earlier stage found. No job lock is held while a batch waits.
 """
 import base64, io, json, os, re, threading, time
-import db, jobs, llm, master, master_schema as ms, rows
+import cell_parse as cp, db, jobs, llm, master, master_schema as ms, profiles, rows
 
 FIELD_HELP = "\n".join([
     "- location: one-letter location code (see codes below)",
@@ -48,6 +48,10 @@ Rules:
 - If it is unclear which project a value belongs to, skip it.
 - Never output salesperson names or phone numbers.
 - quote: the exact words/cells the value came from (verbatim).
+- chat_profile, when given, says whose group this is. In a developer's own group, projects belong to that
+  developer unless the message names another developer: set developer to it. A developer name that is also a
+  place (e.g. Soma Bay, El Gouna) is never the project name and never a reason to pick another developer's project.
+- A price list or "starting from" price gives the starting price of each unit type; that is what the sheet holds.
 - Return an empty list if nothing fits."""
 
 FILE_RULES = """This is a file posted in a WhatsApp chat. The chat context below only helps you tell which project the
@@ -107,32 +111,46 @@ def _chat_context(c, file_id, around=4):
     m = c.execute("SELECT m.* FROM file_occurrences o JOIN source_messages m ON m.wa_id=o.wa_id "
                   "WHERE o.file_id=? ORDER BY m.ts LIMIT 1", (file_id,)).fetchone()
     if not m:
-        return {"caption": "", "nearby": []}
+        return {"caption": "", "nearby": [], "chat": "", "chat_profile": ""}
+    g = c.execute("SELECT name FROM groups WHERE jid=?", (m["group_jid"],)).fetchone()
+    prof = profiles.get(c, m["group_jid"])
     near = c.execute("SELECT text FROM (SELECT text, ts FROM source_messages WHERE group_jid=? AND ts<? AND text<>'' "
                      "ORDER BY ts DESC LIMIT ?) UNION ALL SELECT text FROM (SELECT text, ts FROM source_messages "
                      "WHERE group_jid=? AND ts>? AND text<>'' ORDER BY ts LIMIT ?)",
                      (m["group_jid"], m["ts"], around, m["group_jid"], m["ts"], around)).fetchall()
-    return {"caption": (m["text"] or "")[:500], "nearby": [(n[0] or "")[:300] for n in near]}
+    return {"caption": (m["text"] or "")[:500], "nearby": [(n[0] or "")[:300] for n in near],
+            "chat": g[0] if g else m["group_jid"], "chat_profile": profiles.describe(prof),
+            "developer": prof["developer"] if prof else ""}
 
 
 def text_units(c, jids=None, skip=None, batch=60):
+    """One request per chat chunk, so each request carries that chat's developer profile."""
     chats = _chats(c, jids)
     if not chats:
         return []
     skip = _skip_keys(c) if skip is None else skip
     msgs = [m for m in c.execute(
-        "SELECT wa_id, ts, text, file_name FROM source_messages "
+        "SELECT wa_id, group_jid, ts, text, file_name FROM source_messages "
         f"WHERE group_jid IN ({','.join('?' * len(chats))}) AND text<>'' ORDER BY group_jid, ts", chats)
         if "u:" + m["wa_id"] not in skip]
+    by_chat = {}
+    for m in msgs:
+        by_chat.setdefault(m["group_jid"], []).append(m)
+    names = {r["jid"]: r["name"] for r in c.execute("SELECT jid, name FROM groups")}
     out = []
-    for i in range(0, len(msgs), batch):
-        chunk = msgs[i:i + batch]
-        body = {"messages": [{"source_id": m["wa_id"], "time": m["ts"], "text": m["text"],
-                              "attached_file": m["file_name"]} for m in chunk]}
-        out.append(_unit(f"t{chunk[0]['wa_id']}"[:60], "text", f"messages {i + 1}-{i + len(chunk)}", llm.MODEL,
-                         json.dumps(body, ensure_ascii=False),
-                         {m["wa_id"]: ["message", m["wa_id"], m["ts"]] for m in chunk},
-                         ["u:" + m["wa_id"] for m in chunk]))
+    for jid, items in by_chat.items():
+        prof = profiles.get(c, jid)
+        dev = prof["developer"] if prof else ""
+        for i in range(0, len(items), batch):
+            chunk = items[i:i + batch]
+            body = {"chat": names.get(jid, jid), "chat_profile": profiles.describe(prof),
+                    "messages": [{"source_id": m["wa_id"], "time": m["ts"], "text": m["text"],
+                                  "attached_file": m["file_name"]} for m in chunk]}
+            out.append(_unit(f"t{chunk[0]['wa_id']}"[:60], "text",
+                             f"{names.get(jid, jid)}: messages {i + 1}-{i + len(chunk)}", llm.MODEL,
+                             json.dumps(body, ensure_ascii=False),
+                             {m["wa_id"]: ["message", m["wa_id"], m["ts"], dev] for m in chunk},
+                             ["u:" + m["wa_id"] for m in chunk]))
     return out
 
 
@@ -148,17 +166,18 @@ def sheet_units(c, jids=None, skip=None, chunk_rows=150):
         groups.setdefault((r["file_id"], r["sheet"]), []).append(r)
     out = []
     for (file_id, sheet), items in groups.items():
-        ts = _file_ts(c, file_id)
+        ts, ctx = _file_ts(c, file_id), _chat_context(c, file_id)
         for i in range(0, len(items), chunk_rows):
             part = items[i:i + chunk_rows]
             lines = [{"source_id": str(r["id"]), "text": " | ".join(
                 cell["v"] for cell in json.loads(r["raw_json"]).get("cells", []) if cell["v"].strip())}
                 for r in part]
             lines = [l for l in lines if l["text"].strip()]
-            body = {"file": part[0]["file_name"], "sheet": sheet, "rows": lines}
+            body = {"file": part[0]["file_name"], "sheet": sheet, "chat": ctx["chat"],
+                    "chat_profile": ctx["chat_profile"], "rows": lines}
             out.append(_unit(f"s{part[0]['id']}", "sheets", f"{part[0]['file_name']} / {sheet}", llm.MODEL,
                              json.dumps(body, ensure_ascii=False) if lines else None,
-                             {str(r["id"]): ["row", str(r["id"]), ts] for r in part},
+                             {str(r["id"]): ["row", str(r["id"]), ts, ctx.get("developer", "")] for r in part},
                              ["ur:%d" % r["id"] for r in part]))
     return out
 
@@ -222,7 +241,7 @@ def pdf_units(c, jids=None, skip=None):
                                                        "data": base64.standard_b64encode(data).decode()}},
                        {"type": "text", "text": note}]
             out.append(_unit(f"p{f['id']}_{a}", "pdfs", f"{f['file_name']} p{a}-{b}", llm.FILE_MODEL, content,
-                             {f"p{n}": ["pdf_page", str(pages[n]), ts] for n in range(a, b + 1) if n in pages},
+                             {f"p{n}": ["pdf_page", str(pages[n]), ts, ctx.get("developer", "")] for n in range(a, b + 1) if n in pages},
                              [key]))
     return out
 
@@ -245,11 +264,18 @@ def image_units(c, jids=None, skip=None):
                                                 "data": base64.standard_b64encode(open(r["path"], "rb").read()).decode()}},
                    {"type": "text", "text": note}]
         out.append(_unit(f"i{r['id']}", "images", r["file_name"] or f"image {r['id']}", llm.FILE_MODEL, content,
-                         {"img": ["image", str(r["rid"]), _file_ts(c, r["id"])]}, [key]))
+                         {"img": ["image", str(r["rid"]), _file_ts(c, r["id"]), ctx.get("developer", "")]}, [key]))
     return out
 
 
 BUILDERS = {"text": text_units, "sheets": sheet_units, "pdfs": pdf_units, "images": image_units}
+
+
+def _is_developer_not_project(c, project, developer):
+    key = cp.normalize_project_key(project)
+    if not key or key != cp.normalize_project_key(developer):
+        return False
+    return not c.execute("SELECT 1 FROM master_rows WHERE project_key=? LIMIT 1", (key,)).fetchone()
 
 
 def _store(unit_sources, updates):
@@ -259,7 +285,13 @@ def _store(unit_sources, updates):
             src = unit_sources.get(u["source_id"])
             if not src:
                 continue
-            kind, ref, ts = src
+            kind, ref, ts = src[:3]
+            dev = src[3] if len(src) > 3 else ""
+            if dev:
+                if not u.get("developer"):
+                    u = dict(u, developer=dev)  # the chat's developer (profile) when the message doesn't say
+                if _is_developer_not_project(c, u["project"], dev):
+                    continue  # "Soma Bay" in Soma Bay's own group is the developer/place, not a project
             n += master.add_proposal(c, dict(u, source_kind=kind, source_ref=ref, source_ts=ts))
     return n
 

@@ -283,7 +283,7 @@ def test_insights_sections(client, monkeypatch):
     res = client.get("/api/insights?days=7").json()
     assert res["errors"] == {} and res["has_master"] and res["days"] == 7
     s = res["sections"]
-    assert set(s) == {"summary", "changes", "price_moves", "stale", "throughput", "rows_to_place", "chats"}
+    assert set(s) == {"summary", "changes", "price_moves", "stale", "throughput", "rows_to_place", "chats", "missing_data"}
     assert s["summary"]["approved"] == 1 and s["summary"]["open"] >= 1 and s["summary"]["rows_to_place"] == 3
     assert s["changes"]["total"] == 1 and s["changes"]["by_sheet_field"][0]["field_label"] == "Apartment 2"
     move = s["price_moves"][0]

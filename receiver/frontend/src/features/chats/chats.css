@@ -860,3 +860,17 @@ a.att:hover {
   margin-top: 3px;
   accent-color: var(--orange-600, #DB8127);
 }
+
+.dev-chip {
+  display: inline-flex; align-items: center; gap: 5px; max-width: 220px; min-width: 0;
+  border: 1px solid var(--hairline); border-radius: 999px; background: var(--white, #fff);
+  padding: 2px 10px; color: var(--navy-700, #23376F); cursor: pointer; font: inherit;
+}
+.dev-chip:hover { background: var(--navy-100, rgba(35, 55, 111, 0.06)); }
+.dev-chip:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(219, 129, 39, 0.35); }
+.dev-chip svg { color: var(--orange-600, #DB8127); flex: none; }
+.profile-form { display: flex; flex-direction: column; gap: 14px; }
+.profile-form fieldset { border: 0; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.radio-row { display: flex; gap: 8px; align-items: center; font-size: 14px; cursor: pointer; }
+.radio-row input { accent-color: var(--orange-600, #DB8127); }
+.check-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 6px 12px; }

@@ -130,6 +130,11 @@ CREATE TABLE IF NOT EXISTS brain_reviews(
     proposal_id INTEGER PRIMARY KEY, verdict TEXT, row_id INTEGER, confidence TEXT, reason TEXT, action TEXT,
     model TEXT, created_at INTEGER);
 
+-- developer profile per chat (profiles.py): who the chat belongs to and how that developer shares data
+CREATE TABLE IF NOT EXISTS chat_profiles(
+    jid TEXT PRIMARY KEY, developer TEXT, shares TEXT, on_request_json TEXT, notes TEXT, source TEXT,
+    updated_at INTEGER);
+
 CREATE TABLE IF NOT EXISTS jobs(
     id INTEGER PRIMARY KEY, name TEXT, status TEXT, started_at INTEGER, finished_at INTEGER, log TEXT);
 """

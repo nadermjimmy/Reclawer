@@ -146,8 +146,16 @@ def row_values(c, row):
 
 
 # ---------- matching (decision 13) ----------
+def same_developer(dev_key, row):
+    rk = cp.normalize_project_key(row["developer"])
+    return bool(dev_key and rk and len(dev_key) >= 3 and (dev_key in rk or rk in dev_key))
+
+
 def match(c, project, developer, sheets):
-    """{sheet: (row, match_state, label)} for the best row per sheet. match_state: exact / alias / near."""
+    """{sheet: (row, match_state, label)} for the best row per sheet. match_state: exact / alias / near.
+    When the developer is known (from the message or the chat's developer profile) that developer's rows are tried
+    first, with a looser name match ('Arc' -> 'Arc Of Soma'); another developer's same-named project only counts
+    as a near match, so a person or the brain confirms it."""
     key = cp.normalize_project_key(project)
     if not key:
         return {}
@@ -155,17 +163,36 @@ def match(c, project, developer, sheets):
     dev_key = cp.normalize_project_key(developer)
     q = (f"SELECT * FROM master_rows WHERE state IN ({','.join('?' * len(USABLE))})")
     rows = [r for r in c.execute(q, USABLE).fetchall() if home_sheet(r) in sheets]
+    keys = {key} | ({alias[0]} if alias else set())
     out = {}
     for sheet in sheets:
         cands = [r for r in rows if home_sheet(r) == sheet]
+        mine = [r for r in cands if same_developer(dev_key, r)]
+        hit = None
         for state, keyset in (("exact", {key}), ("alias", {alias[0]} if alias else set())):
-            hits = [r for r in cands if r["project_key"] in keyset]
-            if len(hits) > 1 and dev_key:
-                hits = [r for r in hits if dev_key in cp.normalize_project_key(r["developer"])] or hits
+            hits = [r for r in mine if r["project_key"] in keyset]
             if hits:
-                out[sheet] = (hits[0], state, hits[0]["project"])
+                hit = (hits[0], state)
                 break
-        else:
+        if not hit and mine:  # the developer's own rows, looser
+            best, score = None, 0.0
+            for r in mine:
+                pk = r["project_key"]
+                s = difflib.SequenceMatcher(None, key, pk).ratio()
+                if len(key) >= 3 and len(pk) >= 3 and (pk.startswith(key) or key.startswith(pk) or key in pk or pk in key):
+                    s = max(s, 0.8)
+                if s > score:
+                    best, score = r, s
+            if best is not None and score >= 0.6:
+                hit = (best, "near")
+        if not hit:
+            for state, keyset in (("exact", {key}), ("alias", {alias[0]} if alias else set())):
+                hits = [r for r in cands if r["project_key"] in keyset]
+                if hits:
+                    # same name, other developer: only a near match when we know whose chat this is
+                    hit = (hits[0], "near" if dev_key and mine else state)
+                    break
+        if not hit:
             best, score = None, 0.0
             for r in cands:
                 pk = r["project_key"]
@@ -175,7 +202,9 @@ def match(c, project, developer, sheets):
                 if s > score:
                     best, score = r, s
             if best is not None and score >= 0.85:
-                out[sheet] = (best, "near", best["project"])
+                hit = (best, "near")
+        if hit:
+            out[sheet] = (hit[0], hit[1], hit[0]["project"])
     return out
 
 
@@ -214,7 +243,7 @@ def add_proposal(c, item):
     field = item["field"]
     if field not in ms.ALL_PROPOSABLE or field in ms.NEVER or not item.get("project", "").strip():
         return 0
-    parsed = ms.parse(field, item["value"])
+    parsed = ms.round_prices(field, ms.parse(field, item["value"]))  # the team's rounding rule
     if not parsed.get("raw"):
         return 0
     new_raw = ms.fmt(field, parsed) if parsed.get("ok") else parsed["raw"]

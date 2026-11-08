@@ -6,7 +6,7 @@ Unauthenticated /api/* calls get 401 {"error": "login"} from web.auth_middleware
 import datetime, json, os, re, time
 from fastapi import APIRouter, File, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
-import brain, build, cell_parse as cp, chat_sync, db, feed, history, jobs, master, master_export, master_schema as ms, parse_files, proposals, \
+import brain, build, cell_parse as cp, profiles, chat_sync, db, feed, history, jobs, master, master_export, master_schema as ms, parse_files, proposals, \
     rules, search, web
 
 router = APIRouter(prefix="/api")
@@ -291,6 +291,25 @@ def sheet_view(sheet: str = "", view: str = "all", q: str = "", offset: int = 0,
             "next_offset": offset + limit if offset + limit < total else None}
 
 
+# ---------- developer profile of a chat ----------
+@router.get("/chats/{jid}/profile")
+def chat_profile(jid: str):
+    with db.connect() as c:
+        return {"profile": profiles.get(c, jid), "developers": profiles.master_developers(c),
+                "unit_types": [{"field": f, "label": ms.UNIT_LABELS[f]} for f in ms.UNIT_FIELDS]}
+
+
+@router.put("/chats/{jid}/profile")
+async def save_chat_profile(jid: str, request: Request):
+    """{developer, shares: inventory|starting_prices|'', on_request: [unit fields], notes}."""
+    d = await body_of(request)
+    with db.connect() as c:
+        if not c.execute("SELECT 1 FROM groups WHERE jid=?", (jid,)).fetchone():
+            return err("unknown_chat", 404)
+        return {"profile": profiles.put(c, jid, d.get("developer", ""), d.get("shares", ""), d.get("on_request") or [],
+                                         d.get("notes", ""))}
+
+
 @router.post("/proposals/{pid}/reopen")
 def reopen_proposal(pid: int):
     """Undo a brain decision (approved or rejected by the brain): back on Updates."""
@@ -465,7 +484,8 @@ def master_export_file(which: str):
 
 
 # ---------- jobs / pipeline ----------
-REDO = {"map_projects": "Re-ask unreviewed", "parse_files": "Re-read all", "download_media": "Retry failed"}
+REDO = {"map_projects": "Re-ask unreviewed", "parse_files": "Re-read all", "download_media": "Retry failed",
+        "brain_review": "Re-check what it left open"}
 
 
 def chat_routine(log, mode="batch"):
@@ -573,6 +593,10 @@ async def start_job(key: str, request: Request):
         return err("not_found", 404, f"Unknown step {key}")
     title, fn = found[key]
     args = (True,) if data.get("redo") and key in REDO else ()
+    if key == "brain_review":
+        args = ()
+        if data.get("redo"):
+            fn, title = (lambda log: brain.review(log, redo=True)), f"{title} (re-check)"
     if key == "chat_routine":
         mode = "live" if data.get("mode") == "live" else "batch"
         args, title = (mode,), f"{title} ({'fast' if mode == 'live' else 'half price'})"
@@ -698,6 +722,9 @@ def list_chats(filter: str = "all", q: str = "", scope: str = "", has_suggestion
         for item in out:
             item["preview"], item["media_preview"], item["preview_sender"] = _preview(c, item["jid"]) if item["count"] \
                 else ("", False, None)
+        profs = profiles.for_chats(c, [i["jid"] for i in out])
+        for item in out:
+            item["developer"] = profs[item["jid"]]["developer"] if item["jid"] in profs else ""
         counts = {"all": len(jids), "inventory": len(scoped & jids), "suggestions": len(set(opened) & jids)}
     return {"chats": out, "counts": counts}
 
@@ -1052,7 +1079,66 @@ def ins_chats(c, since, now):
                      "last_sync_at": synced.get(r["jid"])} for r in act[:10]]}
 
 
-INSIGHTS = {"summary": ins_summary, "changes": ins_changes, "price_moves": ins_price_moves, "stale": ins_stale,
+def _phone(raw):
+    """Sheet numbers are Egyptian mobiles without the leading 0 (1121717000) -> (+20 112 171 7000, wa.me link)."""
+    d = re.sub(r"\D", "", cp.text(raw))
+    if not d:
+        return None
+    if d.startswith("0") and len(d) == 11:
+        d = d[1:]
+    if len(d) == 10 and d.startswith("1"):
+        d = "20" + d
+    pretty = f"+{d[:2]} {d[2:5]} {d[5:8]} {d[8:]}" if d.startswith("20") and len(d) == 12 else f"+{d}"
+    return {"phone": pretty, "wa_link": f"https://wa.me/{d}"}
+
+
+def ins_missing_data(c, since, now, days=STALE_DAYS):
+    """Developers whose group is active but whose price rows went quiet: contact their sales rep (Sheet 2)."""
+    stale = [r for r in _stale_rows(c, now) if ms.sheet_kind(r["sheet"]) == ms.GRID and not r["hold"]]
+    if not stale:
+        return []
+    active_since = now - days * 86400
+    names = {r["jid"]: r["name"] for r in c.execute("SELECT jid, name FROM groups")}
+    last_msg = {r[0]: r[1] for r in c.execute("SELECT group_jid, MAX(ts) FROM source_messages GROUP BY group_jid")}
+    reps_rows = c.execute("SELECT * FROM master_rows WHERE kind IN (?,?) AND state<>'dropped'",
+                          (ms.COMMISSION, ms.SEPARATED)).fetchall()
+    out = []
+    for dev_key, profs in profiles.by_developer(c).items():
+        chats = [p for p in profs if (last_msg.get(p["jid"]) or 0) >= active_since]
+        if not chats:
+            continue
+        rows_ = [r for r in stale if master.same_developer(dev_key, r)]
+        if not rows_:
+            continue
+        on_request = sorted({f for p in profs for f in p["on_request"]})
+        reps, seen = [], set()
+        for r in reps_rows:
+            if not master.same_developer(dev_key, r):
+                continue
+            name = master.current(c, r["id"], "sales_name")[0].strip()
+            ph = _phone(master.current(c, r["id"], "sales_contact")[0])
+            if ph and ph["phone"] not in seen:
+                seen.add(ph["phone"])
+                reps.append(dict(ph, name=name or "Sales rep", project=r["project"]))
+        shares = next((p["shares"] for p in profs if p["shares"]), "")
+        developer = profs[0]["developer"]
+        listed = ", ".join(r["project"] for r in rows_[:6]) + (" and others" if len(rows_) > 6 else "")
+        ask = "the latest starting prices" if shares == "starting_prices" else "the latest prices and availability"
+        out.append({
+            "developer": developer, "stale_count": len(rows_), "shares": shares,
+            "on_request": [ms.UNIT_LABELS[f] for f in on_request],
+            "chats": [{"jid": p["jid"], "name": names.get(p["jid"], p["jid"]), "last_message_ts": last_msg.get(p["jid"])}
+                      for p in chats],
+            "projects": [{k: r[k] for k in ("project", "sheet", "row_number", "last_update", "days")}
+                         for r in sorted(rows_, key=lambda x: x["last_update"] or "")],
+            "reps": reps[:4],
+            "message": f"Hi, could you please share {ask} and payment plans for {listed}? Thank you.",
+        })
+    out.sort(key=lambda x: -x["stale_count"])
+    return out
+
+
+INSIGHTS = {"missing_data": ins_missing_data, "summary": ins_summary, "changes": ins_changes, "price_moves": ins_price_moves, "stale": ins_stale,
             "throughput": ins_throughput, "rows_to_place": ins_rows_to_place, "chats": ins_chats}
 
 

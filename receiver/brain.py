@@ -15,7 +15,7 @@ Claude never writes to the sheet; every change goes through master.decide_detail
 """
 import difflib, json, os, re, time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import cell_parse as cp, db, llm, master, master_schema as ms
+import cell_parse as cp, db, llm, master, master_schema as ms, profiles
 
 MODEL = os.getenv("CLAUDE_BRAIN_MODEL", "claude-opus-5-5")
 PRICE_BAND = float(os.getenv("BRAIN_PRICE_BAND", "0.20"))
@@ -45,6 +45,12 @@ For every suggestion decide, using the candidate rows given with it (and their c
   or question, a different project than the value belongs to, a value misread from the text, or a broker's
   personal note. Give row_id 0.
 - unsure: you can't tell from what is given. Give row_id 0.
+
+chat_profile, when given, says whose group the chat is and how that developer shares data. In a developer's own
+group the suggestions are about that developer's projects: prefer that developer's rows, and never move a suggestion
+onto another developer's row just because a name matches. A developer name that is also a place (Soma Bay,
+El Gouna) is not a project and not a reason to pick another developer. Developers that only share starting prices
+send one starting price per unit type: that is a normal update, not missing inventory.
 
 confidence: high only when the chat text and the candidate leave no real doubt; otherwise medium or low.
 reason: one short sentence a busy admin can read (English), naming the row or why it's noise.
@@ -92,10 +98,15 @@ class Rows:
             s += 0.35  # the same developer's rows are always worth showing, even when names look unrelated
         return s
 
-    def candidates(self, project, developer, chat_jid, current_row_id, limit=8, chat_limit=6):
+    def candidates(self, project, developer, chat_jid, current_row_id, limit=8, chat_limit=6, dev_limit=15,
+                   chat_developer=""):
         key, toks, dev_key = cp.normalize_project_key(project), _tokens(project), cp.normalize_project_key(developer)
         scored = sorted(((self.score(key, toks, dev_key, r), r["id"]) for r in self.rows), reverse=True)
         ids = [rid for s, rid in scored[:limit] if s >= 0.3]
+        ck = cp.normalize_project_key(chat_developer)
+        if ck:  # every row of the chat's developer, best names first
+            mine = [rid for s, rid in scored if master.same_developer(ck, self.by_id[rid])][:dev_limit]
+            ids = mine + [i for i in ids if i not in mine]
         for rid in self.chat_rows.get(chat_jid, [])[:chat_limit]:  # rows this chat has updated before
             if rid not in ids:
                 ids.append(rid)
@@ -170,20 +181,25 @@ def _decide(pid, action, reason):
 
 
 # ---------- review ----------
-def _open_suggestions(c, jids):
+def _open_suggestions(c, jids, redo=False):
+    seen = ("SELECT proposal_id FROM brain_reviews" if not redo else
+            "SELECT proposal_id FROM brain_reviews WHERE action<>'kept'")  # redo: look again at what it left open
     q = (f"SELECT p.*, {CHAT_SQL} chat_jid, g.name chat_name FROM proposals p LEFT JOIN groups g ON g.jid={CHAT_SQL} "
-         "WHERE p.state='proposed' AND p.id NOT IN (SELECT proposal_id FROM brain_reviews) ORDER BY p.project_key, p.id")
+         f"WHERE p.state='proposed' AND p.id NOT IN ({seen}) ORDER BY p.project_key, p.id")
     out = c.execute(q).fetchall()
     return [p for p in out if jids is None or p["chat_jid"] in jids]
 
 
 def _group_payload(c, rows, key, items):
     first = items[0]
-    cands = rows.candidates(first["project"], first["developer"], first["chat_jid"], first["row_id"])
+    prof = profiles.get(c, first["chat_jid"]) if first["chat_jid"] else None
+    cands = rows.candidates(first["project"], first["developer"], first["chat_jid"], first["row_id"],
+                            chat_developer=prof["developer"] if prof else "")
     fields = sorted({p["field"] for p in items})
     return {
         "group_id": key,
         "chat": first["chat_name"] or first["chat_jid"] or "",
+        "chat_profile": profiles.describe(prof),
         "suggestions": [{"proposal_id": p["id"], "project_as_written": p["project"], "developer": p["developer"] or "",
                          "column": p["field"], "value": p["new_raw"], "quote": (p["quote"] or "")[:400],
                          "source": p["source_kind"],
@@ -194,14 +210,14 @@ def _group_payload(c, rows, key, items):
     }, {r["id"] for r in cands}
 
 
-def review(log, jids=None):
+def review(log, jids=None, redo=False):
     """Second look at every open suggestion not reviewed yet (or only those from `jids`).
     Returns counts {reviewed, retargeted, approved, rejected, kept}."""
     totals = {"reviewed": 0, "retargeted": 0, "approved": 0, "rejected": 0, "kept": 0}
     with db.connect() as c:
         if not master.current_import(c):
             return totals
-        todo = _open_suggestions(c, set(jids) if jids is not None else None)
+        todo = _open_suggestions(c, set(jids) if jids is not None else None, redo)
         if not todo:
             log("Brain: nothing new to review")
             return totals

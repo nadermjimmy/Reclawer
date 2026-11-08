@@ -163,6 +163,12 @@ def save_file(c, wa_id, content, file_name, mimetype):
     row = c.execute("SELECT id FROM source_files WHERE sha256=?", (sha,)).fetchone()
     if row:
         file_id = row[0]
+        # downloads run in parallel: keep the name from the earliest post of this file, whichever finished first
+        mine = c.execute("SELECT ts FROM source_messages WHERE wa_id=?", (wa_id,)).fetchone()
+        first = c.execute("SELECT MIN(m.ts) FROM file_occurrences o JOIN source_messages m ON m.wa_id=o.wa_id "
+                          "WHERE o.file_id=?", (file_id,)).fetchone()[0]
+        if file_name and mine and mine[0] is not None and (first is None or mine[0] < first):
+            c.execute("UPDATE source_files SET file_name=? WHERE id=?", (file_name, file_id))
     else:
         os.makedirs(db.MEDIA_DIR, exist_ok=True)
         ext = os.path.splitext(file_name or "")[1] or mimetypes.guess_extension(mimetype or "") or ""

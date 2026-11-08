@@ -82,7 +82,19 @@ export interface ChatActivity {
   top: { jid: string; name: string; messages: number; open_suggestions: number; in_scope: boolean; last_sync_at: number | null }[];
 }
 
+export interface MissingData {
+  developer: string;
+  stale_count: number;
+  shares: string;
+  on_request: string[];
+  chats: { jid: string; name: string; last_message_ts: number | null }[];
+  projects: { project: string; sheet: string; row_number: number | null; last_update: string | null; days: number | null }[];
+  reps: { name: string; phone: string; wa_link: string; project: string }[];
+  message: string;
+}
+
 export interface InsightSections {
+  missing_data: MissingData[];
   summary: InsightsSummary;
   changes: Changes;
   price_moves: PriceMove[];
