@@ -1,11 +1,11 @@
-import { ArrowDown, ArrowRight, ArrowUp, Download, FileSpreadsheet, MessageSquare, RefreshCw } from "lucide-react";
+import { ArrowDown, ArrowRight, ArrowUp, Copy, Download, FileSpreadsheet, MessageSquare, Phone, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
 import { errorText } from "../../api/client";
-import { getInsights, type Insights, type InsightSections, type PriceMove, type SectionKey, type ThroughputDay } from "../../api/insights";
+import { getInsights, type Insights, type InsightSections, type MissingData, type PriceMove, type SectionKey, type ThroughputDay } from "../../api/insights";
 import { useSession } from "../../app/session";
 import { usePageTitle } from "../../app/title";
-import { Button, ButtonLink, Card, EmptyState, ErrorBanner, InfoBanner, Segmented, Skeleton, Stat } from "../../components";
+import { Button, ButtonLink, Card, EmptyState, ErrorBanner, InfoBanner, Segmented, Skeleton, Stat, useToast } from "../../components";
 import { fmtDate, fmtNumber, fmtPct, plural, relTime } from "../../lib/format";
 import { useDelayed } from "../../lib/hooks";
 import "./insights.css";
@@ -258,6 +258,17 @@ export function InsightsScreen() {
       )}
 
       <div className="ins-grid">
+        <Section k="missing_data" data={data} eyebrow="Group active, prices quiet for 14 days"
+          title={data?.sections.missing_data ? `Data Missing · ${fmtNumber(data.sections.missing_data.length)}` : "Data Missing"}
+          onRetry={retry} className="ins-wide">
+          {(list) => list.length ? (
+            <ul className="ins-missing">
+              {list.slice(0, 15).map((m) => <MissingRow key={m.developer} m={m} onOpen={(jid) => navigate(`/chats/${encodeURIComponent(jid)}`)} />)}
+              {list.length > 15 && <li className="caption muted">{fmtNumber(list.length - 15)} more developers not shown.</li>}
+            </ul>
+          ) : <EmptyState title="Nothing missing">Every active developer group sent prices in the last 14 days.</EmptyState>}
+        </Section>
+
         <Section k="price_moves" data={data} eyebrow="Approved unit prices" title="Price Moves" onRetry={retry} className="ins-wide">
           {(rows) => rows.length ? (
             <div className="table-wrap">
@@ -371,5 +382,42 @@ export function InsightsScreen() {
         </Section>
       </div>
     </div>
+  );
+}
+
+/** One developer whose group is active but whose price rows went quiet: who to contact and what to send. */
+function MissingRow({ m, onOpen }: { m: MissingData; onOpen: (jid: string) => void }) {
+  const toast = useToast();
+  const copy = () => {
+    navigator.clipboard.writeText(m.message).then(
+      () => toast.show({ message: "Message copied" }),
+      () => toast.show({ tone: "error", message: "Couldn't copy. Select the text instead." }),
+    );
+  };
+  return (
+    <li className="ins-missing-row">
+      <div className="ins-missing-main">
+        <span className="strong" dir="auto">{m.developer}</span>
+        <span className="caption muted">
+          {plural(m.stale_count, "project")} with no new prices: <span dir="auto">{m.projects.slice(0, 4).map((p) => p.project).join(", ")}</span>
+          {m.projects.length > 4 ? ` and ${m.projects.length - 4} more` : ""}
+          {m.shares === "starting_prices" ? " · shares starting prices only" : ""}
+          {m.on_request.length ? ` · ${m.on_request.join(", ")} on request` : ""}
+        </span>
+        <p className="ins-missing-msg small" dir="auto">{m.message}</p>
+      </div>
+      <div className="ins-missing-actions">
+        {m.reps.length ? m.reps.slice(0, 2).map((r) => (
+          <a key={r.phone} className="btn btn-primary btn-sm" href={`${r.wa_link}?text=${encodeURIComponent(m.message)}`} target="_blank" rel="noreferrer">
+            <span className="btn-icon" aria-hidden="true"><Phone size={14} /></span>
+            <span className="btn-label">{r.name} · {r.phone}</span>
+          </a>
+        )) : <span className="caption muted">No sales contact on Sheet 2 for this developer.</span>}
+        <Button size="sm" variant="ghost" icon={<Copy size={14} />} onClick={copy}>Copy Message</Button>
+        {m.chats[0] && (
+          <Button size="sm" variant="ghost" icon={<MessageSquare size={14} />} onClick={() => onOpen(m.chats[0].jid)}>Open Group</Button>
+        )}
+      </div>
+    </li>
   );
 }

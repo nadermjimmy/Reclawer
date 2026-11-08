@@ -20,7 +20,31 @@ export interface Chat {
   last_sync_at: number | null;
   /** Messages that arrived (webhook) since the last Sync now of this chat; null when never synced. */
   new_since_sync: number | null;
+  /** Developer this chat belongs to (developer profile; auto from "<Developer> & Byit App"). */
+  developer?: string;
 }
+
+export interface DeveloperProfile {
+  jid: string;
+  developer: string;
+  shares: "" | "inventory" | "starting_prices";
+  on_request: string[];
+  notes: string;
+  source: "auto" | "team";
+  updated_at: number;
+}
+
+export interface ProfileInfo {
+  profile: DeveloperProfile | null;
+  developers: string[];
+  unit_types: { field: string; label: string }[];
+}
+
+export const getProfile = (jid: string) => get<ProfileInfo>(`/chats/${encodeURIComponent(jid)}/profile`);
+export const saveProfile = (jid: string, p: { developer: string; shares: string; on_request: string[]; notes: string }) =>
+  request<{ profile: DeveloperProfile }>(`/chats/${encodeURIComponent(jid)}/profile`, {
+    method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(p),
+  });
 
 export interface ChatList {
   chats: Chat[];

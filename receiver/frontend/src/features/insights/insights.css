@@ -199,3 +199,14 @@
     margin-right: 6px;
   }
 }
+
+.ins-missing { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.ins-missing-row {
+  display: flex; flex-wrap: wrap; gap: 10px 16px; justify-content: space-between; align-items: flex-start;
+  padding: 12px 0; border-bottom: 1px solid var(--hairline);
+}
+.ins-missing-row:last-child { border-bottom: 0; }
+.ins-missing-main { display: flex; flex-direction: column; gap: 2px; flex: 1 1 320px; min-width: 0; }
+.ins-missing-msg { margin: 6px 0 0; padding: 8px 10px; border-radius: 12px; background: var(--grey-100, #F3F2F1); }
+.ins-missing-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; flex: 0 1 auto; }
+.ins-missing-actions a.btn { text-decoration: none; }

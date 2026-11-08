@@ -94,5 +94,18 @@ def same_value(field, a, b):
             "payment_plan": ["down_payment_pct", "years", "cash"], "commission": ["pct", "net"]}
     keys.update({f: ["area_sqm", "price_egp", "status"] for f in UNIT_FIELDS})
     if field in keys and a.get("ok") and b.get("ok"):
-        return all(a.get(k) == b.get(k) for k in keys[field])
+        def norm(p, k):
+            v = p.get(k)
+            return cp.round_price(v) if k in ("price_egp", "rtm_price_egp") and v else v
+        return all(norm(a, k) == norm(b, k) for k in keys[field])
     return (a.get("raw") or "").strip().lower() == (b.get("raw") or "").strip().lower()
+
+
+def round_prices(field, parsed):
+    """Apply the team's rounding to a suggested value's prices (unit cells and Ready To Move)."""
+    if not parsed.get("ok"):
+        return parsed
+    for k in ("price_egp", "rtm_price_egp"):
+        if parsed.get(k):
+            parsed = dict(parsed, **{k: cp.round_price(parsed[k])})
+    return parsed

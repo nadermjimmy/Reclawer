@@ -227,3 +227,13 @@ def parse_date(raw):
     t = text(raw).strip()
     st = status_of(t)
     return {"raw": t, "date": None, "row_status": st if st in ROW_STATUSES else "", "ok": not t or bool(st)}
+
+
+# ---------- team rounding rule (owner decision) ----------
+def round_price(v):
+    """Prices the team writes: 1,000,000 EGP and above round UP to the next 50,000; below that UP to the next 1,000."""
+    if v is None:
+        return None
+    import math
+    step = 50000 if v >= 1_000_000 else 1000
+    return float(math.ceil(v / step - 1e-9) * step)
