@@ -1,15 +1,18 @@
 import { Check, RotateCcw, Sparkles, X } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useSearchParams } from "react-router-dom";
 import { errorText } from "../../api/client";
 import { decide, reopen } from "../../api/proposals";
-import { getSheet, type SheetCell, type SheetChange, type SheetData, type SheetRow, type SheetView } from "../../api/sheet";
+import { getSheet, type SheetCell, type SheetChange, type SheetColumn, type SheetData, type SheetRow, type SheetView } from "../../api/sheet";
 import { Button, ButtonLink, Drawer, EmptyState, ErrorBanner, SearchInput, Segmented, Skeleton, useToast } from "../../components";
+import { useIsPhone } from "../../lib/hooks";
 import { relTime } from "../../lib/format";
 import { usePageTitle } from "../../app/title";
+import { SheetGrid } from "./SheetGrid";
+import { STATE_NOTE, address, cellOf, columnWidths, displayValue, fmtDateLong, hasDetails, isDateCol, rawValue, type Pos, type Shown } from "./model";
 import "./sheet.css";
 
-type Shown = "current" | "master";
-interface Picked { row: SheetRow; field: string; label: string; cell: SheetCell }
+interface Picked { row: SheetRow; col: SheetColumn; cell: SheetCell }
 
 const VIEWS: { key: SheetView; label: string }[] = [
   { key: "all", label: "All rows" },
@@ -17,35 +20,34 @@ const VIEWS: { key: SheetView; label: string }[] = [
   { key: "pending", label: "Open suggestions" },
   { key: "approved", label: "Approved" },
 ];
+const VALUES: { key: Shown; label: string }[] = [
+  { key: "current", label: "After approvals" },
+  { key: "master", label: "As uploaded" },
+];
+const ORIGIN: Pos = { r: 0, c: 0 };
 
-function shownValue(cell: SheetCell, shown: Shown) {
-  if (shown === "current" && cell.approved) return cell.approved.new_raw;
-  return cell.master;
-}
-
-function cellClass(cell: SheetCell, shown: Shown) {
-  const c = ["sv-cell"];
-  if (shown === "current" && cell.approved) c.push(cell.approved.decided_by === "brain" ? "is-brain" : "is-approved");
-  if (cell.pending) c.push("is-pending");
-  return c.join(" ");
-}
-
-/** The master workbook as a grid, with approved changes and open suggestions on top, to check them against the
- * team's own sheet. Click a highlighted cell for the source, the brain's reason and the actions. */
+/** The master workbook as a Google-Sheets-like grid, with approved changes and open suggestions on top, so the team
+ * can check them against their own sheet. Select a cell to see it in the formula bar; Enter or double-click a
+ * highlighted cell for the source, the brain's reason and the actions. */
 export function SheetScreen() {
   usePageTitle("Sheet");
   const toast = useToast();
-  const [sheet, setSheet] = useState("");
-  const [view, setView] = useState<SheetView>("changed");
+  const phone = useIsPhone();
+  const [params, setParams] = useSearchParams();
+  const sheet = params.get("sheet") ?? "";
+  const [view, setView] = useState<SheetView>("all");
   const [shown, setShown] = useState<Shown>("current");
   const [query, setQuery] = useState("");
   const [q, setQ] = useState("");
   const [data, setData] = useState<SheetData | null>(null);
-  const [rows, setRows] = useState<SheetRow[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [sel, setSel] = useState<Pos>(ORIGIN);
   const [picked, setPicked] = useState<Picked | null>(null);
   const [busy, setBusy] = useState(false);
+  const gridRef = useRef<HTMLDivElement>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
+  const keep = useRef<{ sheet: string; rowId: number | null; field: string } | null>(null);
 
   useEffect(() => {
     const t = window.setTimeout(() => setQ(query.trim()), 200);
@@ -57,8 +59,13 @@ export function SheetScreen() {
     try {
       const d = await getSheet(sheet, view, q);
       setData(d);
-      setRows(d.rows);
-      if (!sheet) setSheet(d.sheet);
+      // Keep the cursor on the same row and column across a refresh; a new tab starts at A2.
+      const k = keep.current;
+      if (k && k.sheet === d.sheet) {
+        const r = k.rowId == null ? -1 : d.rows.findIndex((x) => x.row_id === k.rowId);
+        const c = d.columns.findIndex((x) => x.field === k.field);
+        setSel((s) => ({ r: r >= 0 ? r : Math.min(s.r, Math.max(0, d.rows.length - 1)), c: c >= 0 ? c : 0 }));
+      } else setSel(ORIGIN);
       setError(null);
     } catch (e) {
       setError(errorText(e, "Couldn't load the sheet."));
@@ -68,12 +75,47 @@ export function SheetScreen() {
   }, [sheet, view, q]);
   useEffect(() => { void load(); }, [load]);
 
-  const more = async () => {
-    if (!data?.next_offset) return;
-    const d = await getSheet(data.sheet, view, q, data.next_offset);
-    setData(d);
-    setRows((r) => [...r, ...d.rows]);
+  const rows = useMemo(() => data?.rows ?? [], [data]);
+  const cols = useMemo(() => data?.columns ?? [], [data]);
+  // Column widths are fitted once per tab from the fullest set of rows seen, so filtering doesn't make them jump.
+  const fitted = useRef(new Map<string, { n: number; widths: number[] }>());
+  const widths = useMemo(() => {
+    const key = `${data?.sheet}|${cols.map((c) => c.field).join(",")}`;
+    const had = fitted.current.get(key);
+    if (had && had.n >= rows.length) return had.widths;
+    const w = columnWidths(cols, rows);
+    fitted.current.set(key, { n: rows.length, widths: w });
+    return w;
+  }, [data?.sheet, cols, rows]);
+  const activeSheet = data?.sheet ?? sheet;
+  const selRow = rows[sel.r] as SheetRow | undefined;
+  const selCol = cols[sel.c] as SheetColumn | undefined;
+
+  useEffect(() => {
+    keep.current = data ? { sheet: data.sheet, rowId: selRow?.row_id ?? null, field: selCol?.field ?? "" } : null;
+  }, [data, selRow, selCol]);
+
+  const pickTab = (s: string) => {
+    if (s === activeSheet) return;
+    setParams((p) => { const n = new URLSearchParams(p); n.set("sheet", s); return n; }, { replace: true });
   };
+
+  const open = useCallback((p: Pos) => {
+    const row = rows[p.r];
+    const col = cols[p.c];
+    if (row && col) setPicked({ row, col, cell: cellOf(row, col.field) });
+  }, [rows, cols]);
+
+  const copy = useCallback((p: Pos) => {
+    const row = rows[p.r];
+    const col = cols[p.c];
+    if (!row || !col) return;
+    const v = displayValue(cellOf(row, col.field), shown, isDateCol(col));
+    navigator.clipboard?.writeText(v).then(
+      () => toast.show({ message: `Copied ${address(col, row)}` }),
+      () => toast.show({ tone: "error", message: "Couldn't copy. Select the text in the formula bar instead." }),
+    );
+  }, [rows, cols, shown, toast]);
 
   const act = async (fn: () => Promise<unknown>, done: string) => {
     setBusy(true);
@@ -89,117 +131,172 @@ export function SheetScreen() {
     }
   };
 
-  const cols = data?.columns ?? [];
-  const sticky = useMemo(() => new Set(["developer", "project"]), []);
+  const focusGrid = () => gridRef.current?.focus();
+  const filtered = view !== "all" || q !== "";
 
+  let body: ReactNode;
   if (error && !data) {
-    return <div className="page"><ErrorBanner onRetry={() => void load()}>{error}</ErrorBanner></div>;
+    body = <div className="sg-message"><ErrorBanner onRetry={() => void load()}>{error}</ErrorBanner></div>;
+  } else if (!data) {
+    body = <div className="sg-message" aria-busy="true"><Skeleton height={22} /><Skeleton height={22} /><Skeleton height={22} /><Skeleton height={22} /></div>;
+  } else if (!rows.length) {
+    body = (
+      <div className="sg-message">
+        <EmptyState title={q ? `No rows match "${q}"` : view === "all" ? "No rows on this sheet" : "No rows with changes here"}
+          actions={filtered ? (
+            <Button variant="secondary" onClick={() => { setView("all"); setQuery(""); }}>Show all rows</Button>
+          ) : undefined} />
+      </div>
+    );
+  } else {
+    body = (
+      <SheetGrid rows={rows} cols={cols} widths={widths} shown={shown} phone={phone} sel={sel} resetKey={data.sheet}
+        label={`${data.sheet} sheet`} gridRef={gridRef} onSelect={setSel} onOpen={open} onCopy={copy}
+        onFind={() => { searchRef.current?.focus(); searchRef.current?.select(); }} />
+    );
   }
-  if (data === null && !loading) return null;
 
   return (
-    <div className="page sheetview">
-      <div className="sv-tabs" role="tablist" aria-label="Sheet">
-        {(data?.sheets ?? []).map((s) => (
-          <button key={s} type="button" role="tab" aria-selected={s === sheet} className={`sv-tab${s === sheet ? " is-active" : ""}`}
-            onClick={() => { setSheet(s); setRows([]); }}>{s}</button>
-        ))}
-      </div>
-      <div className="sv-toolbar">
+    <div className="sheetview">
+      <div className="sg-toolbar">
         <Segmented label="Rows" items={VIEWS} value={view} onChange={setView} size="sm" />
-        <Segmented label="Values" size="sm" value={shown} onChange={setShown}
-          items={[{ key: "current", label: "After approvals" }, { key: "master", label: "As uploaded" }]} />
-        <SearchInput label="Search project or developer" placeholder="Project or developer" value={query}
-          onChange={(e) => setQuery(e.target.value)} className="sv-search" />
-      </div>
-      {data && (
-        <div className="sv-legend small">
-          <span className="tnum"><b>{data.counts.rows.toLocaleString("en-US")}</b> rows</span>
-          <span><i className="sv-key is-approved" /> Approved <b className="tnum">{data.counts.approved_cells}</b></span>
-          <span><i className="sv-key is-brain" /> Approved by brain</span>
-          <span><i className="sv-key is-pending" /> Open suggestion <b className="tnum">{data.counts.pending_cells}</b></span>
-          {data.counts.suggested_new_rows > 0 && <span><i className="sv-key is-newrow" /> Suggested new row <b className="tnum">{data.counts.suggested_new_rows}</b></span>}
-        </div>
-      )}
-      {error && data && <ErrorBanner onRetry={() => void load()}>Couldn't refresh. Showing the last view.</ErrorBanner>}
-      {loading && !rows.length ? (
-        <div className="card"><Skeleton height={320} /></div>
-      ) : !rows.length ? (
-        <div className="card"><EmptyState title={view === "all" ? "No rows on this sheet" : "No rows with changes here"}
-          actions={view !== "all" ? <Button variant="secondary" onClick={() => setView("all")}>Show all rows</Button> : undefined} /></div>
-      ) : (
-        <div className="sv-wrap card card-flush">
-          <table className="sv-grid">
-            <thead>
-              <tr>
-                <th className="sv-rownum" scope="col">#</th>
-                {cols.map((c) => <th key={c.field} scope="col" className={sticky.has(c.field) ? `sv-sticky sv-${c.field}` : ""}>{c.label}</th>)}
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((r, i) => (
-                <tr key={r.row_id ?? `new-${i}`} className={r.state === "suggested_new" ? "is-newrow" : r.state !== "active" ? "is-muted" : ""}>
-                  <th scope="row" className="sv-rownum tnum">{r.row_number ?? (r.state === "suggested_new" ? "new?" : "new")}</th>
-                  {cols.map((c) => {
-                    const cell = r.cells[c.field] ?? { master: "" };
-                    const has = Boolean(cell.pending || (shown === "current" && cell.approved));
-                    const value = shownValue(cell, shown);
-                    return (
-                      <td key={c.field} className={`${cellClass(cell, shown)}${sticky.has(c.field) ? ` sv-sticky sv-${c.field}` : ""}`} dir="auto">
-                        {has ? (
-                          <button type="button" className="sv-hit" onClick={() => setPicked({ row: r, field: c.field, label: c.label, cell })}
-                            aria-label={`${c.label}, ${r.cells.project?.master ?? ""}: details`}>
-                            <span className="sv-val">{value || " "}</span>
-                            {cell.pending && <span className="sv-sugg">→ {cell.pending.new_raw}{cell.pending.count > 1 ? ` (+${cell.pending.count - 1})` : ""}</span>}
-                          </button>
-                        ) : <span className="sv-val">{value}</span>}
-                      </td>
-                    );
-                  })}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          {data?.next_offset != null && (
-            <div className="load-more"><Button variant="ghost" onClick={() => void more()}>Load more ({data.total - rows.length} left)</Button></div>
-          )}
-        </div>
-      )}
-      <Drawer open={Boolean(picked)} onClose={() => setPicked(null)} eyebrow={picked ? `${data?.sheet} · ${picked.row.row_number ? `Row ${picked.row.row_number}` : "New row"}` : ""}
-        title={picked ? `${picked.row.cells.project?.master ?? ""} · ${picked.label}` : ""}>
-        {picked && (
-          <div className="sv-detail">
-            <dl className="sv-values">
-              <div><dt className="caption">Master (as uploaded)</dt><dd dir="auto">{picked.cell.master || "Empty"}</dd></div>
-              {picked.cell.approved && <div><dt className="caption">After approvals</dt><dd dir="auto" className="strong">{picked.cell.approved.new_raw}</dd></div>}
-              {picked.cell.pending && <div><dt className="caption">Suggested</dt><dd dir="auto" className="strong">{picked.cell.pending.new_raw}</dd></div>}
-            </dl>
-            {picked.cell.approved && (
-              <ChangeBlock title={picked.cell.approved.decided_by === "brain" ? "Approved by brain" : "Approved"} ch={picked.cell.approved}>
-                {picked.cell.approved.decided_by === "brain" && (
-                  <Button variant="ghost" size="sm" icon={<RotateCcw size={14} />} disabled={busy}
-                    onClick={() => void act(() => reopen(picked.cell.approved!.proposal_id), "Reopened: it's back on Updates")}>Reopen</Button>
-                )}
-              </ChangeBlock>
-            )}
-            {picked.cell.pending && (
-              <ChangeBlock title={`Open suggestion${picked.cell.pending.count > 1 ? ` (newest of ${picked.cell.pending.count})` : ""}`} ch={picked.cell.pending}>
-                <Button variant="primary" size="sm" icon={<Check size={14} />} disabled={busy || picked.cell.pending.row_new}
-                  title={picked.cell.pending.row_new ? "New rows are approved on Updates, where you choose the sheet" : undefined}
-                  onClick={() => void act(() => decide([picked.cell.pending!.proposal_id], "approve"), "Approved")}>Approve</Button>
-                <Button variant="ghost" size="sm" icon={<X size={14} />} disabled={busy}
-                  onClick={() => void act(() => decide([picked.cell.pending!.proposal_id], "reject"), "Rejected")}>Reject</Button>
-                <ButtonLink to={`/updates?q=${encodeURIComponent(picked.row.cells.project?.master ?? "")}`} variant="ghost" size="sm">Open in Updates</ButtonLink>
-              </ChangeBlock>
-            )}
-          </div>
+        <Segmented label="Values" items={VALUES} value={shown} onChange={setShown} size="sm" />
+        <SearchInput ref={searchRef} label="Search project or developer" placeholder="Project or developer"
+          value={query} onChange={(e) => setQuery(e.target.value)} className="sg-search"
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === "ArrowDown") { e.preventDefault(); focusGrid(); }
+            if (e.key === "Escape" && query) { e.preventDefault(); setQuery(""); }
+          }} />
+        {data && <Legend data={data} />}
+        {data && (
+          <span className="sg-count caption tnum" aria-live="polite">
+            {loading ? "Loading…" : filtered
+              ? `${data.total.toLocaleString("en-US")} of ${data.counts.rows.toLocaleString("en-US")} rows`
+              : `${data.counts.rows.toLocaleString("en-US")} rows`}
+          </span>
         )}
+      </div>
+      {error && data && <div className="sg-banner"><ErrorBanner onRetry={() => void load()}>Couldn't refresh. Showing the last view.</ErrorBanner></div>}
+      <FormulaBar row={rows.length ? selRow : undefined} col={rows.length ? selCol : undefined} shown={shown}
+        onOpen={() => open(sel)} />
+      <div className="sg-area">{body}</div>
+      <div className="sg-bottom">
+        <div className="sg-tabs" role="tablist" aria-label="Sheets">
+          {(data?.sheets ?? []).map((s) => (
+            <button key={s} type="button" role="tab" aria-selected={s === activeSheet}
+              className={`sg-tab${s === activeSheet ? " is-active" : ""}`} onClick={() => pickTab(s)}>{s}</button>
+          ))}
+        </div>
+        {data && <Legend data={data} />}
+      </div>
+      <Drawer open={Boolean(picked)} onClose={() => setPicked(null)}
+        eyebrow={picked ? `${activeSheet} · ${address(picked.col, picked.row)} · ${picked.row.row_number ? `Row ${picked.row.row_number}` : "New row"}` : ""}
+        title={picked ? `${picked.row.cells.project?.master || "Untitled row"} · ${picked.col.label}` : ""}>
+        {picked && <Details picked={picked} busy={busy} act={act} />}
       </Drawer>
     </div>
   );
 }
 
-function ChangeBlock({ title, ch, children }: { title: string; ch: SheetChange; children?: React.ReactNode }) {
+function Legend({ data }: { data: SheetData }) {
+  return (
+    <div className="sg-legend caption" aria-label="Legend">
+      <span><i className="sg-key is-approved" /> Approved <b className="tnum">{data.counts.approved_cells}</b></span>
+      <span><i className="sg-key is-brain" /> By brain</span>
+      <span><i className="sg-key is-pending" /> Open suggestion <b className="tnum">{data.counts.pending_cells}</b></span>
+      {data.counts.suggested_new_rows > 0 && (
+        <span><i className="sg-key is-newrow" /> New row <b className="tnum">{data.counts.suggested_new_rows}</b></span>
+      )}
+    </div>
+  );
+}
+
+/** Address box + the selected cell's full value; for a changed cell: master → current and the open suggestion. */
+function FormulaBar({ row, col, shown, onOpen }: { row?: SheetRow; col?: SheetColumn; shown: Shown; onOpen: () => void }) {
+  const cell = row && col ? cellOf(row, col.field) : undefined;
+  const dateCol = col ? isDateCol(col) : false;
+  const fmt = (v: string) => (dateCol ? fmtDateLong(v) : v);
+  let content: ReactNode = null;
+  if (cell && col && row) {
+    const value = rawValue(cell, shown, dateCol);
+    const changedTo = shown === "current" ? cell.approved?.new_raw ?? (dateCol ? cell.current : undefined) : undefined;
+    content = (
+      <>
+        {changedTo !== undefined ? (
+          <span className="sg-fx-change">
+            <span className="sg-fx-old" dir="auto">{fmt(cell.master) || "empty"}</span>
+            <span aria-hidden="true">→</span><span className="sr-only">changed to</span>
+            <b dir="auto">{fmt(changedTo)}</b>
+            {cell.approved?.decided_by === "brain" && <span className="sg-fx-tag">brain</span>}
+            {!cell.approved && dateCol && <span className="sg-fx-tag">approval date</span>}
+          </span>
+        ) : (
+          <span className="sg-fx-value" dir="auto">{fmt(value)}</span>
+        )}
+        {cell.pending && (
+          <span className="sg-fx-sugg">
+            <span className="sg-fx-tag is-pending">Suggested</span>
+            <b dir="auto">{cell.pending.new_raw}</b>
+            {cell.pending.count > 1 && <span className="muted tnum">+{cell.pending.count - 1} more</span>}
+          </span>
+        )}
+        {STATE_NOTE[row.state] && !cell.pending && !changedTo && <span className="sg-fx-note">{STATE_NOTE[row.state]}</span>}
+      </>
+    );
+  }
+  return (
+    <div className="sg-fx" aria-label="Selected cell">
+      <div className="sg-fx-addr tnum" aria-label="Cell">{address(col, row) || " "}</div>
+      <div className="sg-fx-sym" aria-hidden="true">fx</div>
+      <div className="sg-fx-body">{content}</div>
+      {cell && hasDetails(cell) && (
+        <button type="button" className="sg-fx-open" onClick={onOpen}>Details<span className="sg-kbd" aria-hidden="true">↵</span></button>
+      )}
+    </div>
+  );
+}
+
+function Details({ picked, busy, act }: { picked: Picked; busy: boolean; act: (fn: () => Promise<unknown>, done: string) => Promise<void> }) {
+  const { cell, row, col } = picked;
+  const dateCol = isDateCol(col);
+  const fmt = (v: string) => (dateCol ? fmtDateLong(v) : v);
+  return (
+    <div className="sv-detail">
+      <dl className="sv-values">
+        <div><dt className="caption">Master (as uploaded)</dt><dd dir="auto">{fmt(cell.master) || "Empty"}</dd></div>
+        {cell.approved && <div><dt className="caption">After approvals</dt><dd dir="auto" className="strong">{cell.approved.new_raw}</dd></div>}
+        {dateCol && cell.current && <div><dt className="caption">Approval date</dt><dd className="strong tnum">{fmt(cell.current)}</dd></div>}
+        {cell.pending && <div><dt className="caption">Suggested</dt><dd dir="auto" className="strong">{cell.pending.new_raw}</dd></div>}
+      </dl>
+      {!hasDetails(cell) && (
+        <p className="small muted">
+          {dateCol && cell.current ? "The export writes the approval date on rows with approved changes." : "No approved change or open suggestion on this cell."}
+          {STATE_NOTE[row.state] ? ` ${STATE_NOTE[row.state]}.` : ""}
+        </p>
+      )}
+      {cell.approved && (
+        <ChangeBlock title={cell.approved.decided_by === "brain" ? "Approved by brain" : "Approved"} ch={cell.approved}>
+          {cell.approved.decided_by === "brain" && (
+            <Button variant="ghost" size="sm" icon={<RotateCcw size={14} />} disabled={busy}
+              onClick={() => void act(() => reopen(cell.approved!.proposal_id), "Reopened: it's back on Updates")}>Reopen</Button>
+          )}
+        </ChangeBlock>
+      )}
+      {cell.pending && (
+        <ChangeBlock title={`Open suggestion${cell.pending.count > 1 ? ` (newest of ${cell.pending.count})` : ""}`} ch={cell.pending}>
+          <Button variant="primary" size="sm" icon={<Check size={14} />} disabled={busy || cell.pending.row_new}
+            title={cell.pending.row_new ? "New rows are approved on Updates, where you choose the sheet" : undefined}
+            onClick={() => void act(() => decide([cell.pending!.proposal_id], "approve"), "Approved")}>Approve</Button>
+          <Button variant="ghost" size="sm" icon={<X size={14} />} disabled={busy}
+            onClick={() => void act(() => decide([cell.pending!.proposal_id], "reject"), "Rejected")}>Reject</Button>
+          <ButtonLink to={`/updates?q=${encodeURIComponent(row.cells.project?.master ?? "")}`} variant="ghost" size="sm">Open in Updates</ButtonLink>
+        </ChangeBlock>
+      )}
+    </div>
+  );
+}
+
+function ChangeBlock({ title, ch, children }: { title: string; ch: SheetChange; children?: ReactNode }) {
   return (
     <section className="sv-change">
       <h3 className="eyebrow">{title}</h3>

@@ -135,9 +135,21 @@ Every brain decision shows "Approved/Rejected by brain" with its reason and a **
 
 ## Sheet view (check the brain against your own master)
 
-**Sheet** (desktop rail; on phones under More) shows each master sheet as a grid in the workbook's column order.
+**Sheet** (desktop rail; on phones under More) shows each master sheet like Google Sheets: column letters, real row
+numbers, frozen Developer/Project columns, a formula bar, tabs at the bottom, arrow-key navigation (Ctrl+Arrow,
+Home/End, PageUp/Down, Enter for details, Ctrl+F to search, Ctrl+C to copy).
 "After approvals" shows the values the next export will write; "As uploaded" shows the master you uploaded.
 Approved cells are tinted (darker when the brain approved them), open suggestions have a dashed outline with the
 suggested value under the current one, and suggested new rows appear at the bottom in grey. Click a highlighted
 cell for the master value, the change, the source quote and the brain's reason, and approve, reject or reopen it.
 API: `GET /api/sheet?sheet=&view=all|changed|pending|approved&q=`.
+
+## Developer profiles, rounding and Data Missing
+
+- **Developer profile** (chat header chip): which developer the chat belongs to (auto from "<Developer> & Byit App"),
+  whether they send full inventory or starting prices only, unit types sent only on request, notes for the brain.
+  Suggestions from the chat match that developer's rows first; a developer name that is also a place (Soma Bay)
+  is never read as a project.
+- **Rounding**: suggested prices round up to the next 50,000 from 1,000,000 EGP, otherwise to the next 1,000.
+- **Insights > Data Missing**: developers whose group is active but whose price rows had no change for 14 days,
+  with the sales rep from Sheet 2 (WhatsApp link) and a ready-to-send message.
