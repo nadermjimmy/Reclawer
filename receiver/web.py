@@ -1,9 +1,10 @@
 """Password-protected web UI: run the pipeline, browse the inventory, work the review queue."""
 import datetime, hashlib, hmac, json, os, time
-from fastapi import APIRouter, Form, Request
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
+from fastapi import APIRouter, File, Form, Request, UploadFile
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
-import build, db, facts, history, jobs, mapping, media_review, parse_files, rows, rules
+import build, db, facts, history, jobs, mapping, master, master_export, master_schema, media_review, parse_files, \
+    proposals, rows, rules
 
 PASSWORD = os.getenv("APP_PASSWORD", "")
 SECRET = (os.getenv("SESSION_SECRET") or PASSWORD or "unset").encode()
@@ -98,6 +99,8 @@ STEPS = [
      mapping.propose),
     ("extract_facts", "6. Extract facts (Claude)", "Find location, service charge, payment plan, completion, "
      "amenities, handover and status statements.", facts.extract_all),
+    ("propose_updates", "6b. Propose sheet updates (Claude)", "Compare chats and files with the master workbook "
+     "and list cell updates for approval on the Updates page.", proposals.propose),
     ("classify_images", "7. Review images (Claude)", "Propose what each image shows (shown only after you approve).",
      media_review.classify),
     ("build", "8. Build inventory", "Rebuild projects, phases, units and the review queue.", build.rebuild),
@@ -464,3 +467,83 @@ def review_fact(request: Request, fact_id: int):
     with db.connect() as c:
         f = c.execute("SELECT * FROM fact_assertions WHERE id=?", (fact_id,)).fetchone()
     return page(request, "fact.html", f=f)
+
+
+# ---------- master workbook & proposed updates ----------
+XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+
+@router.get("/master", response_class=HTMLResponse)
+def master_page(request: Request, show: str = "open"):
+    with db.connect() as c:
+        imp = master.current_import(c)
+        q = ("SELECT i.*, r.sheet, r.developer, r.project, r.location_code, r.row_number, r.target_sheet "
+             "FROM master_issues i JOIN master_rows r ON r.id=i.row_id ")
+        issues = c.execute(q + ("WHERE i.state='open' " if show == "open" else "") + "ORDER BY i.issue_type, r.sheet, "
+                           "r.row_number").fetchall()
+        counts = {r["state"]: r["n"] for r in c.execute("SELECT state, COUNT(*) n FROM proposals GROUP BY state")}
+    return page(request, "master.html", imp=imp, summary=json.loads(imp["summary_json"] or "{}") if imp else {},
+                issues=issues, show=show, counts=counts, grid_sheets=master_schema.GRID_SHEETS)
+
+
+@router.post("/master/upload")
+async def master_upload(file: UploadFile = File(...)):
+    data = await file.read()
+    if jobs.running():
+        return RedirectResponse("/master?busy=1", 303)
+    try:
+        master.import_workbook(data, file.filename or "master.xlsx")
+    except Exception as e:  # not an xlsx, or unreadable
+        return RedirectResponse(f"/master?error={type(e).__name__}", 303)
+    return RedirectResponse("/master?imported=1", 303)
+
+
+@router.post("/master/issues/{issue_id}")
+def master_issue(issue_id: int, action: str = Form(...), sheet: str = Form("")):
+    master.resolve_issue(issue_id, action, sheet)
+    return RedirectResponse("/master", 303)
+
+
+@router.get("/master/export/{which}")
+def master_export_file(which: str):
+    data = master_export.team_file() if which == "team" else master_export.sql_file() if which == "sql" else None
+    if data is None:
+        return RedirectResponse("/master", 303)
+    day = datetime.datetime.now(DUBAI).strftime("%Y-%m-%d")
+    name = f"App Updates {day}.xlsx" if which == "team" else f"App Updates SQL {day}.xlsx"
+    return Response(data, media_type=XLSX, headers={"Content-Disposition": f'attachment; filename="{name}"'})
+
+
+@router.get("/updates", response_class=HTMLResponse)
+def updates(request: Request, state: str = "proposed", sheet: str = "", q: str = "", match: str = ""):
+    where, args = ["p.state=?"], [state]
+    if sheet:
+        where.append("p.sheet=?")
+        args.append(sheet)
+    if match:
+        where.append("p.match_state=?")
+        args.append(match)
+    if q:
+        where.append("(p.project LIKE ? OR p.developer LIKE ? OR p.matched_label LIKE ?)")
+        args += [f"%{q}%"] * 3
+    with db.connect() as c:
+        items = c.execute("SELECT p.*, r.project AS row_project, r.developer AS row_developer, r.row_number "
+                          "FROM proposals p LEFT JOIN master_rows r ON r.id=p.row_id WHERE " + " AND ".join(where) +
+                          " ORDER BY p.project_key, p.field, p.source_ts DESC LIMIT 500", args).fetchall()
+        counts = {r["state"]: r["n"] for r in c.execute("SELECT state, COUNT(*) n FROM proposals GROUP BY state")}
+        has_master = master.current_import(c) is not None
+    return page(request, "updates.html", items=items, state=state, sheet=sheet, q=q, match=match, counts=counts,
+                sheets=list(master_schema.SHEETS), has_master=has_master)
+
+
+@router.post("/updates/decide")
+async def updates_decide(request: Request):
+    form = await request.form()
+    ids = [int(i) for i in form.getlist("id") if str(i).isdigit()]
+    action = form.get("action", "")
+    if action not in ("approve", "reject"):
+        return RedirectResponse("/updates", 303)
+    done, skipped = master.decide(ids, action, form.get("sheet", ""))
+    back = form.get("back") or "/updates"
+    sep = "&" if "?" in back else "?"
+    return RedirectResponse(f"{back}{sep}done={done}&skipped={len(skipped)}", 303)

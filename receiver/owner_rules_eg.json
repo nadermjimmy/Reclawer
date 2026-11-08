@@ -52,5 +52,33 @@
     "mercedes",
     "g63",
     "g 63"
-  ]
+  ],
+  "master_location_codes": {
+    "e": "East / New Cairo",
+    "g": "Galala",
+    "n": "North Coast",
+    "o": "October",
+    "z": "New Zayed",
+    "s": "Sokhna",
+    "r": "Red Sea",
+    "c": "New Capital"
+  },
+  "master_location_sheets": {
+    "New Cairo": [
+      "e",
+      "g",
+      "n",
+      "o"
+    ],
+    "Sokhna&new zayed": [
+      "z",
+      "s",
+      "r",
+      "l"
+    ],
+    "New Capital": [
+      "c"
+    ]
+  },
+  "_comment_master": "Master 'App Updates' workbook: location code meanings, and which price-grid sheet each code belongs to (from each sheet's saved filter). 'l' is on the Sokhna filter but has no known meaning, so those rows go to review."
 }
