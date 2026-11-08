@@ -1,0 +1,40 @@
+.more-list {
+  padding: var(--s2);
+  display: flex;
+  flex-direction: column;
+  max-width: 640px;
+}
+.more-item {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  padding: var(--s3);
+  min-height: 64px;
+  border-radius: var(--radius-inner);
+  text-decoration: none;
+  color: var(--ink);
+  background: none;
+  border: 0;
+  text-align: left;
+  cursor: pointer;
+  width: 100%;
+}
+.more-item:hover {
+  background: var(--navy-100);
+  color: var(--ink);
+}
+.more-icon {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: var(--navy-100);
+  flex: none;
+}
+.more-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
