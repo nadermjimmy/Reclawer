@@ -57,6 +57,11 @@ def set_session(r):
 
 
 # ---------- pipeline steps (run from More > Pipeline) ----------
+def _eval_job(log):
+    from eval import run_eval
+    run_eval.run_job(log)
+
+
 STEPS = [
     ("sync_groups", "1. Sync chats", "Fetch the list of groups and private chats from Evolution.",
      history.sync_groups),
@@ -74,6 +79,9 @@ STEPS = [
     ("brain_review", "6c. Brain review (Claude)", "Second look at open suggestions: moves false new rows onto "
      "existing rows, approves safe updates (existing row, sheet format, price within ±20%, no Hold/Hide, never "
      "commission) and rejects clear noise. Runs after every sync; run it here for the backlog.", brain.review),
+    ("eval_report", "Eval: brain report (no LLM)", "Freeze every decision a person made into a gold set and measure "
+     "matching, noise, accepted values, auto-approve precision and API cost per source kind. Free: no Claude calls.",
+     _eval_job),
     ("classify_images", "7. Review images (Claude)", "Propose what each image shows (shown only after you approve).",
      media_review.classify),
     ("build", "8. Build inventory", "Rebuild projects, phases, units and the review queue.", build.rebuild),

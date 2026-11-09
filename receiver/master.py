@@ -6,7 +6,7 @@ master cell.
 """
 import datetime, difflib, hashlib, io, json, os, time
 import openpyxl
-import cell_parse as cp, db, master_schema as ms, profiles
+import cell_parse as cp, db, master_schema as ms, normalize, profiles
 
 USABLE = ("active", "moved", "new")  # row states that ingestion may match and update
 
@@ -23,6 +23,7 @@ def import_workbook(data, file_name):
     now = int(time.time())
     summary = {"sheets": {}, "ignored_sheets": [], "unknown_headers": {}, "issues": 0, "legacy_duplicates": 0}
     with db.connect() as c:
+        stamp_row_keys(c)  # labels keep a stable row identity before the old rows go
         for t in ("master_cells", "master_rows", "master_sheets", "master_issues"):
             c.execute(f"DELETE FROM {t}")
         # earlier proposals stay as history; pending ones can't be applied to the new master any more
@@ -63,6 +64,7 @@ def import_workbook(data, file_name):
             summary["sheets"][sheet] = n
         _location_checks(c, imp, summary)
         summary["assignments_missing"] = profiles.relink_projects(c)  # team assignments, re-checked by name
+        summary["relinked"] = relink(c)  # human labels and brain reviews point at the new rows again
         c.execute("UPDATE master_imports SET summary_json=? WHERE id=?", (json.dumps(summary), imp))
     return summary
 
@@ -93,6 +95,44 @@ def _issue(c, imp, row_id, kind, reason, target=None):
     c.execute("UPDATE master_rows SET state='needs_review', target_sheet=? WHERE id=?", (target, row_id))
     c.execute("INSERT INTO master_issues(import_id,row_id,issue_type,reason) VALUES(?,?,?,?)",
               (imp, row_id, kind, reason))
+
+
+# ---------- stable row identity (survives re-uploads) ----------
+def row_key_of(row):
+    return normalize.row_key(row["developer"], row["project"], home_sheet(row))
+
+
+def stamp_row_keys(c):
+    """Give every proposal / brain review that points at a row its row_key. Rows that lost their row_id earlier
+    (re-uploads before keys existed) get one from the sheet's project name they were matched to."""
+    for t, col in (("proposals", "row_id"), ("brain_reviews", "row_id")):
+        for r in c.execute(f"SELECT x.rowid rid, m.* FROM {t} x JOIN master_rows m ON m.id=x.{col} "
+                           "WHERE x.row_key IS NULL").fetchall():
+            c.execute(f"UPDATE {t} SET row_key=? WHERE rowid=?", (row_key_of(r), r["rid"]))
+    for p in c.execute("SELECT id, developer, matched_label, sheet FROM proposals WHERE row_key IS NULL "
+                       "AND row_id IS NULL AND state IN ('approved','rejected') AND matched_label<>''").fetchall():
+        c.execute("UPDATE proposals SET row_key=? WHERE id=?",
+                  (normalize.row_key(p["developer"], p["matched_label"], p["sheet"]), p["id"]))
+
+
+def relink(c):
+    """After an import: point labels at the new rows by row_key. Returns counts {linked, unlinked}.
+    Proposals get `label_row_id`, never `row_id`: an approval made against the old master must not be replayed on
+    top of the new upload (the team may have changed that cell since); `row_id` stays NULL as before."""
+    keys = {}
+    for r in c.execute(f"SELECT * FROM master_rows WHERE state IN ({','.join('?' * len(USABLE))})", USABLE):
+        keys.setdefault(row_key_of(r), r["id"])
+    linked = unlinked = 0
+    for t in ("proposals", "brain_reviews"):
+        for x in c.execute(f"SELECT rowid rid, row_key FROM {t} WHERE row_key IS NOT NULL").fetchall():
+            rid = keys.get(x["row_key"])
+            col = "label_row_id" if t == "proposals" else "row_id"
+            if rid:
+                c.execute(f"UPDATE {t} SET {col}=? WHERE rowid=?", (rid, x["rid"]))
+                linked += t == "proposals"
+            else:
+                unlinked += t == "proposals"
+    return {"linked": linked, "unlinked": unlinked}
 
 
 def resolve_issue(issue_id, action, sheet=""):
@@ -165,7 +205,8 @@ def _loose(key, cands, floor=0.6):
     return best if best is not None and score >= floor else None
 
 
-def match(c, project, developer, sheets, assigned=None):
+def match(c, project, developer, sheets, assigned=None, alias_before=None):
+    # alias_before (eval replay): only aliases and approval-created rows that existed before that time
     """{sheet: (row, match_state, label)} for the best row per sheet. match_state: exact / alias / near.
     When the developer is known (from the message or the chat's developer profile) that developer's rows are tried
     first, with a looser name match ('Arc' -> 'Arc Of Soma'); another developer's same-named project only counts
@@ -173,10 +214,13 @@ def match(c, project, developer, sheets, assigned=None):
     key = cp.normalize_project_key(project)
     if not key:
         return {}
-    alias = c.execute("SELECT project_key FROM master_aliases WHERE alias_key=?", (key,)).fetchone()
+    alias = c.execute("SELECT project_key FROM master_aliases WHERE alias_key=?" +
+                      (" AND confirmed_at<?" if alias_before else ""),
+                      (key, alias_before) if alias_before else (key,)).fetchone()  # eval: aliases known back then
     dev_key = cp.normalize_project_key(developer)
     q = (f"SELECT * FROM master_rows WHERE state IN ({','.join('?' * len(USABLE))})")
-    rows = [r for r in c.execute(q, USABLE).fetchall() if home_sheet(r) in sheets]
+    rows = [r for r in c.execute(q, USABLE).fetchall() if home_sheet(r) in sheets
+            and not (alias_before and r["state"] == "new" and (r["created_at"] or 0) >= alias_before)]
     keys = {key} | ({alias[0]} if alias else set())
     out = {}
     for sheet in sheets:
@@ -316,13 +360,15 @@ def add_proposal(c, item):
             warn.append("New project with no known location: choose the sheet when approving")
         if not parsed.get("ok"):
             warn.append("Value doesn't follow the sheet format; check before approving")
+        rkey = row_key_of(row) if row is not None else normalize.row_key(item.get("developer", ""), project, sheet)
         cur = c.execute("INSERT OR IGNORE INTO proposals(row_id,sheet,developer,project,project_key,field,old_raw,"
                         "new_raw,new_parsed_json,quote,source_kind,source_ref,source_ts,match_state,matched_label,"
-                        "location_code,warning,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        "location_code,warning,created_at,row_key,first_row_key,first_match_state) "
+                        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                         (row["id"] if row is not None else None, sheet, item.get("developer", "").strip(), project,
                          key, field, old_raw, new_raw, json.dumps(parsed, ensure_ascii=False), item.get("quote", ""),
                          item["source_kind"], item["source_ref"], item.get("source_ts"), state, label, loc,
-                         "; ".join(warn), int(time.time())))
+                         "; ".join(warn), int(time.time()), rkey, rkey, state))
         if cur.rowcount:
             written += 1
             _supersede(c, cur.lastrowid)
@@ -381,9 +427,13 @@ def decide(ids, action, sheet=""):
     return len(done), [s["reason"] for s in skipped if s["state"] == "proposed"]
 
 
-def decide_detail(ids, action, sheet=""):
+REJECT_REASONS = ("wrong_project", "wrong_value", "not_an_offer", "duplicate")
+
+
+def decide_detail(ids, action, sheet="", actor="person", reason=None):
     """Like decide, but returns ([done ids], [{id, reason, state}]). A proposal that is no longer open (decided
-    elsewhere, or superseded by an approval earlier in the same batch) is skipped with its current state."""
+    elsewhere, or superseded by an approval earlier in the same batch) is skipped with its current state.
+    actor: 'person' or 'brain' (written to decided_by). reason: a REJECT_REASONS value for a rejection."""
     done, skipped = [], []
     now = int(time.time())
     with db.connect() as c:
@@ -394,8 +444,10 @@ def decide_detail(ids, action, sheet=""):
                 skipped.append({"id": pid, "reason": f"already {st[0]}" if st else "not found",
                                 "state": st[0] if st else None})
                 continue
+            by = "brain" if actor == "brain" else None
             if action == "reject":
-                c.execute("UPDATE proposals SET state='rejected', decided_at=? WHERE id=?", (now, pid))
+                c.execute("UPDATE proposals SET state='rejected', decided_at=?, decided_by=?, reject_reason=? "
+                          "WHERE id=?", (now, by, reason if reason in REJECT_REASONS else None, pid))
                 done.append(pid)
                 continue
             row_id = p["row_id"]
@@ -408,10 +460,13 @@ def decide_detail(ids, action, sheet=""):
                     continue
                 row_id = _new_row(c, target, p, now)
             elif p["match_state"] == "near":
-                row = c.execute("SELECT project_key FROM master_rows WHERE id=?", (row_id,)).fetchone()
-                c.execute("INSERT OR REPLACE INTO master_aliases VALUES(?,?,?,?)",
-                          (p["project_key"], row["project_key"], p["project"], now))
-            c.execute("UPDATE proposals SET state='approved', decided_at=?, row_id=? WHERE id=?", (now, row_id, pid))
+                row = c.execute("SELECT project_key, developer FROM master_rows WHERE id=?", (row_id,)).fetchone()
+                c.execute("INSERT OR REPLACE INTO master_aliases(alias_key,project_key,label,confirmed_at,developer_key) "
+                          "VALUES(?,?,?,?,?)", (p["project_key"], row["project_key"], p["project"], now,
+                                                normalize.compact(row["developer"])))
+            final = c.execute("SELECT * FROM master_rows WHERE id=?", (row_id,)).fetchone()
+            c.execute("UPDATE proposals SET state='approved', decided_at=?, row_id=?, decided_by=?, row_key=? "
+                      "WHERE id=?", (now, row_id, by, row_key_of(final) if final else p["row_key"], pid))
             # older open proposals for the same cell are outdated now
             c.execute("UPDATE proposals SET state='superseded' WHERE state='proposed' AND row_id=? AND field=? "
                       "AND COALESCE(source_ts,0)<=?", (row_id, p["field"], p["source_ts"] or 0))

@@ -164,3 +164,16 @@ and a match outside them is only a near match (warning "Outside this group's ass
 never auto-approves. Assignments are keyed by normalized developer + project, re-checked on every master upload
 (`profiles.relink_projects`; missing ones are flagged, not dropped), and every change is logged in
 `assignment_log` as a team label. Groups the team hasn't assigned behave as before.
+
+## Eval harness (Phase 1)
+
+`receiver/eval/`: `build_gold.py` freezes every decision a **person** made (approved or rejected) into a gold set under
+`/data/eval/gold-<date>/`, split by source kind. `run_eval.py` replays matching on it and measures noise, accepted
+values, auto-approve precision and API cost (from `llm_usage`). It's free by default; `--llm N --max-usd X` is an opt-in
+paid replay. Run it from More > Pipeline > "Eval: brain report (no LLM)". See BASELINE.md.
+
+Labels survive master re-uploads: proposals and brain reviews carry `row_key` (normalized developer | project | sheet)
+and are re-linked to the new rows on import (`label_row_id`; an old approval is never replayed onto the new master).
+A rejection can carry a reason (Updates asks "Why?"). `BRAIN_AUTO_APPROVE` / `BRAIN_AUTO_REJECT` (default `1`, today's
+behaviour) can turn the brain's auto-decisions off. `receiver/normalize.py`: Arabic/Franco normalization and a
+transliteration key that lets 'ماونتن فيو' and 'Mountain View' meet.

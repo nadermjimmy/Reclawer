@@ -326,7 +326,7 @@ def run_stage_live(log, stage, jids=None):
     units = [u for u in units if u["content"] is not None]
 
     def ask(u):
-        return llm.call_json(SYSTEM, u["content"], SCHEMA, model=u["model"])["updates"]
+        return llm.call_json(SYSTEM, u["content"], SCHEMA, model=u["model"], purpose=f"extract:{u['stage']}")["updates"]
 
     with ThreadPoolExecutor(LIVE_WORKERS) as pool:
         futures = {pool.submit(ask, u): u for u in units}

@@ -670,3 +670,12 @@ mark {
   min-width: 0;
 }
 .brain-note { margin: 0; font-size: var(--fs-small, 14px); }
+
+/* "Why?" after a rejection: the reason is the learning label */
+.toast-why { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.toast-why-q { opacity: 0.75; margin-left: 4px; }
+.toast-why-chip {
+  border: 1px solid rgba(255, 255, 255, 0.35); background: transparent; color: inherit; border-radius: 999px;
+  padding: 1px 9px; font: inherit; font-size: 12px; cursor: pointer;
+}
+.toast-why-chip:hover, .toast-why-chip:focus-visible { background: rgba(255, 255, 255, 0.14); outline: none; }

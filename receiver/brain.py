@@ -167,9 +167,9 @@ def _retarget(c, p, row):
             and not master.approval_date(c, row["id"]) and not any("Hold/Hide" in w for w in warn)):
         warn.append("Approving writes today's date and lifts Hold/Hide on Sheet 2")
     try:
-        c.execute("UPDATE proposals SET row_id=?, sheet=?, old_raw=?, match_state=?, matched_label=?, warning=? "
-                  "WHERE id=?", (row["id"], sheet, old_raw, "exact" if same_name else "near", row["project"],
-                                 "; ".join(warn), p["id"]))
+        c.execute("UPDATE proposals SET row_id=?, sheet=?, old_raw=?, match_state=?, matched_label=?, warning=?, "
+                  "row_key=? WHERE id=?", (row["id"], sheet, old_raw, "exact" if same_name else "near", row["project"],
+                                           "; ".join(warn), master.row_key_of(row), p["id"]))
     except Exception:  # an identical suggestion already targets this row
         return None
     master._supersede(c, p["id"])
@@ -177,14 +177,19 @@ def _retarget(c, p, row):
 
 
 def _record(c, pid, d, action, model=MODEL):
-    c.execute("INSERT OR REPLACE INTO brain_reviews VALUES(?,?,?,?,?,?,?,?)",
-              (pid, d["verdict"], d.get("row_id") or None, d["confidence"], d["reason"], action, model, int(time.time())))
+    row = c.execute("SELECT * FROM master_rows WHERE id=?", (d.get("row_id") or 0,)).fetchone()
+    c.execute("INSERT OR REPLACE INTO brain_reviews(proposal_id,verdict,row_id,confidence,reason,action,model,"
+              "created_at,row_key) VALUES(?,?,?,?,?,?,?,?,?)",
+              (pid, d["verdict"], d.get("row_id") or None, d["confidence"], d["reason"], action, model,
+               int(time.time()), master.row_key_of(row) if row else None))
+
+
+AUTO_APPROVE = os.getenv("BRAIN_AUTO_APPROVE", "1") != "0"  # existing behaviour, kept ON; 0 turns it off
+AUTO_REJECT = os.getenv("BRAIN_AUTO_REJECT", "1") != "0"
 
 
 def _decide(pid, action, reason):
-    master.decide_detail([pid], action)
-    with db.connect() as c:
-        c.execute("UPDATE proposals SET decided_by='brain' WHERE id=? AND state IN ('approved','rejected')", (pid,))
+    master.decide_detail([pid], action, actor="brain")
 
 
 # ---------- review ----------
@@ -243,7 +248,8 @@ def review(log, jids=None, redo=False):
 
     def ask(chunk):
         body = {"groups": [p for p, _ in chunk]}
-        return llm.call_json(SYSTEM, json.dumps(body, ensure_ascii=False), SCHEMA, model=MODEL)["decisions"]
+        return llm.call_json(SYSTEM, json.dumps(body, ensure_ascii=False), SCHEMA, model=MODEL,
+                             purpose="brain")["decisions"]
 
     with ThreadPoolExecutor(WORKERS) as pool:
         futures = [pool.submit(ask, ch) for ch in chunks]
@@ -299,6 +305,11 @@ def _apply(d, allowed, totals, log):
         else:
             _record(c, pid, d, "kept")
             action = None
+    if (action == "approve" and not AUTO_APPROVE) or (action == "reject" and not AUTO_REJECT):
+        with db.connect() as c:  # flag off: leave it for a person, keep the brain's verdict as advice
+            c.execute("UPDATE brain_reviews SET action='kept', reason=reason||? WHERE proposal_id=?",
+                      (f" (auto-{action} is off)", pid))
+        action = None
     if action:
         _decide(pid, action, d["reason"])
         totals["approved" if action == "approve" else "rejected"] += 1

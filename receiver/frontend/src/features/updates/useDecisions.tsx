@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { errorText, postKeepalive } from "../../api/client";
-import { decide as apiDecide, type DecideAction, type DecideResult, type Proposal } from "../../api/proposals";
+import { decide as apiDecide, REJECT_REASONS, setRejectReason, type DecideAction, type DecideResult, type Proposal,
+  type RejectReason } from "../../api/proposals";
 import { useSession } from "../../app/session";
 import { useToast } from "../../components";
 
@@ -13,6 +14,7 @@ interface Batch {
   items: Proposal[];
   sheetById: Record<number, string>;
   timer: number;
+  reason?: RejectReason;
 }
 
 export interface DecisionsApi {
@@ -58,7 +60,7 @@ export function useDecisions(onCommitted: (res: DecideResult, batch: { items: Pr
       setPendingDecisions(0);
       const ids = b.items.map((i) => i.id);
       try {
-        const res = await apiDecide(ids, b.action, b.sheetById);
+        const res = await apiDecide(ids, b.action, b.sheetById, b.reason);
         const back = res.skipped.filter((s) => s.state === "proposed");
         if (back.length) {
           setProblems((m) => {
@@ -114,10 +116,22 @@ export function useDecisions(onCommitted: (res: DecideResult, batch: { items: Pr
       pending.current = b;
       setPendingDecisions(items.length);
       const verb = action === "approve" ? "Approved" : "Rejected";
+      const text = items.length === 1 ? `${verb}: ${items[0].field_label}, ${items[0].row_project || items[0].project}` : `${verb} ${items.length} suggestions`;
+      const why = (r: RejectReason) => {  // before the commit it rides along; after, it's stored on its own
+        if (pending.current?.key === key) b.reason = r;
+        else void setRejectReason(ids, r).catch(() => undefined);
+        toast.show({ id: "undo", duration: 2500, message: `${text} · ${REJECT_REASONS.find((x) => x.key === r)?.label}` });
+      };
       toast.show({
         id: "undo",
-        duration: UNDO_MS,
-        message: items.length === 1 ? `${verb}: ${items[0].field_label}, ${items[0].row_project || items[0].project}` : `${verb} ${items.length} suggestions`,
+        duration: action === "reject" ? UNDO_MS + 3000 : UNDO_MS,
+        message: action === "reject" ? (
+          <span className="toast-why">{text}<span className="toast-why-q">Why?</span>
+            {REJECT_REASONS.map((r) => (
+              <button key={r.key} type="button" className="toast-why-chip" onClick={() => why(r.key)}>{r.label}</button>
+            ))}
+          </span>
+        ) : text,
         action: { label: "Undo", onClick: () => undoRef.current() },
       });
     },
@@ -146,7 +160,7 @@ export function useDecisions(onCommitted: (res: DecideResult, batch: { items: Pr
       if (!b) return;
       window.clearTimeout(b.timer);
       pending.current = null;
-      postKeepalive("/proposals/decide", { ids: b.items.map((i) => i.id), action: b.action, sheet_by_id: b.sheetById });
+      postKeepalive("/proposals/decide", { ids: b.items.map((i) => i.id), action: b.action, sheet_by_id: b.sheetById, reason: b.reason });
     };
     window.addEventListener("pagehide", onHide);
     return () => {

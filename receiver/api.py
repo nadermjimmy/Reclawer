@@ -363,6 +363,20 @@ async def bulk_assign(request: Request):
     return {"assigned": done}
 
 
+@router.post("/proposals/reason")
+async def reject_reason(request: Request):
+    """{ids, reason}: why a person rejected these (wrong_project / wrong_value / not_an_offer / duplicate).
+    Only for rejections a person made; it's the label the learning layer trains on."""
+    d = await body_of(request)
+    ids = [int(i) for i in d.get("ids") or [] if str(i).isdigit()]
+    if d.get("reason") not in master.REJECT_REASONS or not ids:
+        return err("bad_request", 422, "Send ids and a reason: " + ", ".join(master.REJECT_REASONS))
+    with db.connect() as c:
+        n = c.execute(f"UPDATE proposals SET reject_reason=? WHERE id IN ({','.join('?' * len(ids))}) "
+                      "AND state='rejected' AND decided_by IS NULL", [d["reason"], *ids]).rowcount
+    return {"updated": n}
+
+
 @router.post("/proposals/{pid}/reopen")
 def reopen_proposal(pid: int):
     """Undo a brain decision (approved or rejected by the brain): back on Updates."""
@@ -386,7 +400,8 @@ async def decide(request: Request):
         return err("bad_sheet", 422, f"Unknown sheet: {bad[0]}")
     default = data.get("sheet") or ""
     chosen = {i: sheets.get(i, default) for i in ids} if (sheets or default) else ""
-    done, skipped = master.decide_detail(ids, action, chosen)
+    reason = data.get("reason") if data.get("reason") in master.REJECT_REASONS else None
+    done, skipped = master.decide_detail(ids, action, chosen, reason=reason)
     with db.connect() as c:
         return {"done": done, "skipped": skipped, "counts": state_counts(c)}
 

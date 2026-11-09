@@ -144,6 +144,11 @@ CREATE TABLE IF NOT EXISTS chat_projects(
 CREATE TABLE IF NOT EXISTS assignment_log(
     id INTEGER PRIMARY KEY, jid TEXT, field TEXT, old TEXT, new TEXT, by TEXT, at INTEGER);
 
+-- measured API usage per call (Phase 1 cost reporting)
+CREATE TABLE IF NOT EXISTS llm_usage(
+    id INTEGER PRIMARY KEY, ts INTEGER, purpose TEXT, model TEXT, input_tokens INTEGER, output_tokens INTEGER,
+    cache_read INTEGER, cache_write INTEGER, batch INTEGER DEFAULT 0);
+
 CREATE TABLE IF NOT EXISTS jobs(
     id INTEGER PRIMARY KEY, name TEXT, status TEXT, started_at INTEGER, finished_at INTEGER, log TEXT);
 """
@@ -158,6 +163,13 @@ def connect():
     return c
 
 
+def _add_columns(c, table, cols):
+    have = {r[1] for r in c.execute(f"PRAGMA table_info({table})")}
+    for col in cols:
+        if col.split()[0] not in have:
+            c.execute(f"ALTER TABLE {table} ADD COLUMN {col}")
+
+
 def init():
     with connect() as c:
         c.executescript(SCHEMA)
@@ -168,6 +180,10 @@ def init():
         for col in ("assigned_by TEXT", "assigned_at INTEGER"):
             if col.split()[0] not in pcols:
                 c.execute(f"ALTER TABLE chat_profiles ADD COLUMN {col}")
+        _add_columns(c, "proposals", ["row_key TEXT", "first_row_key TEXT", "first_match_state TEXT",
+                                      "reject_reason TEXT", "label_row_id INTEGER"])
+        _add_columns(c, "brain_reviews", ["row_key TEXT"])
+        _add_columns(c, "master_aliases", ["developer_key TEXT"])
         cols = {r[1] for r in c.execute("PRAGMA table_info(proposals)")}
         if "decided_by" not in cols:  # 'brain' when the brain approved or rejected it, else a person
             c.execute("ALTER TABLE proposals ADD COLUMN decided_by TEXT")

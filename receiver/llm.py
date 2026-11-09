@@ -51,7 +51,22 @@ def parse_message(msg):
         raise LLMError(f"invalid JSON from Claude: {e}") from e
 
 
-def call_json(system, content, schema, max_tokens=MAX_TOKENS, model=None, effort=None):
+def log_usage(msg, purpose="", batch=False):
+    """Record what a call actually cost (llm_usage). Never raises."""
+    try:
+        import db, time as _t
+        u = msg.usage
+        with db.connect() as c:
+            c.execute("INSERT INTO llm_usage(ts,purpose,model,input_tokens,output_tokens,cache_read,cache_write,batch) "
+                      "VALUES(?,?,?,?,?,?,?,?)",
+                      (int(_t.time()), purpose, getattr(msg, "model", ""), getattr(u, "input_tokens", 0) or 0,
+                       getattr(u, "output_tokens", 0) or 0, getattr(u, "cache_read_input_tokens", 0) or 0,
+                       getattr(u, "cache_creation_input_tokens", 0) or 0, int(batch)))
+    except Exception:
+        pass
+
+
+def call_json(system, content, schema, max_tokens=MAX_TOKENS, model=None, effort=None, purpose=""):
     """content: a string or a list of content blocks. Returns the parsed JSON object.
     If a safety classifier declines, the API re-runs the request on a fallback model in the same call."""
     global FALLBACKS
@@ -60,13 +75,17 @@ def call_json(system, content, schema, max_tokens=MAX_TOKENS, model=None, effort
     if FALLBACKS:
         try:
             with client().beta.messages.stream(**body, betas=[FALLBACK_BETA], fallbacks="default") as stream:
-                return parse_message(stream.get_final_message())
+                msg = stream.get_final_message()
+                log_usage(msg, purpose)
+                return parse_message(msg)
         except anthropic.BadRequestError as e:
             if "fallback" not in str(e).lower():
                 raise
             FALLBACKS = False  # this account/model can't use server-side fallback: send plain requests from now on
     with client().messages.stream(**body) as stream:
-        return parse_message(stream.get_final_message())
+        msg = stream.get_final_message()
+        log_usage(msg, purpose)
+        return parse_message(msg)
 
 
 # ---------- Message Batches (50% cost, results within 24 h, usually under 1 h) ----------
@@ -86,6 +105,7 @@ def batch_results(batch_id):
     """Yield (custom_id, payload or None, error text or None)."""
     for r in client().messages.batches.results(batch_id):
         if r.result.type == "succeeded":
+            log_usage(r.result.message, "batch:" + r.custom_id.split("_", 2)[-1][:1], batch=True)
             try:
                 yield r.custom_id, parse_message(r.result.message), None
             except LLMError as e:
