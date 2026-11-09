@@ -170,6 +170,15 @@ CREATE INDEX IF NOT EXISTS ix_le_kind ON learned_examples(source_kind, id);
 CREATE TABLE IF NOT EXISTS noise_skips(
     wa_id TEXT PRIMARY KEY, score REAL, model_version TEXT, threshold REAL, skipped_at INTEGER, requeued_at INTEGER);
 
+-- Phase 5: spreadsheet layouts a person mapped to master fields (read in code under TEMPLATES=1)
+CREATE TABLE IF NOT EXISTS sheet_templates(
+    fingerprint TEXT PRIMARY KEY, developer_key TEXT, headers_json TEXT, mapping_json TEXT, confirmed_by TEXT,
+    confirmed_at INTEGER, example_file_id INTEGER, example_sheet TEXT, used INTEGER DEFAULT 0);
+-- Phase 5: earlier extractions reused on re-reads and forwarded messages (EXTRACTION_CACHE=1)
+CREATE TABLE IF NOT EXISTS extraction_cache(
+    content_key TEXT PRIMARY KEY, source_kind TEXT, chat_developer_key TEXT, model TEXT, output_json TEXT,
+    created_at INTEGER, hits INTEGER DEFAULT 0);
+
 CREATE TABLE IF NOT EXISTS jobs(
     id INTEGER PRIMARY KEY, name TEXT, status TEXT, started_at INTEGER, finished_at INTEGER, log TEXT);
 """
@@ -205,6 +214,7 @@ def init():
                                       "reject_reason TEXT", "label_row_id INTEGER"])
         _add_columns(c, "brain_reviews", ["row_key TEXT"])
         _add_columns(c, "master_aliases", ["developer_key TEXT"])
+        _add_columns(c, "ingest_items", ["cache_json TEXT"])
         # developer-scoped aliases start from the global ones (developer_key '' = any developer, today's behaviour)
         c.execute("INSERT OR IGNORE INTO dev_aliases(alias_key,developer_key,project_key,label,confirmed_at) "
                   "SELECT alias_key, COALESCE(developer_key,''), project_key, label, confirmed_at FROM master_aliases")

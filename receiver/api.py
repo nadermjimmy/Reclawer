@@ -1431,6 +1431,31 @@ def source_row(row_id: int):
         return source_context(c, kind[0] if kind[0] in ("pdf_page", "image") else "row", str(row_id))
 
 
+# ---------- Phase 5: spreadsheet templates ("Confirm columns") ----------
+@router.get("/sources/files/{file_id}/template")
+def file_template(file_id: int, sheet: str):
+    """The sheet's header and column mapping (confirmed, or a suggestion from the master's header names)."""
+    import proposals as _p, templates
+    with db.connect() as c:
+        dev = _p._chat_context(c, file_id).get("developer", "")
+        return dict(templates.describe(c, file_id, sheet, dev), enabled=templates.TEMPLATES)
+
+
+@router.put("/sources/files/{file_id}/template")
+async def confirm_template(file_id: int, request: Request):
+    """{sheet, mapping: {column index: role}}: a person confirms which column holds which master field. Sheets with
+    the same layout from the same developer are then read in code (TEMPLATES=1)."""
+    import proposals as _p, templates
+    d = await body_of(request)
+    with db.connect() as c:
+        dev = _p._chat_context(c, file_id).get("developer", "")
+        try:
+            templates.confirm(c, file_id, d.get("sheet", ""), d.get("mapping") or {}, dev)
+        except ValueError as e:
+            return err("bad_template", 422, str(e))
+        return templates.describe(c, file_id, d.get("sheet", ""), dev)
+
+
 @router.get("/reconciliation")
 def reconciliation():
     with db.connect() as c:
