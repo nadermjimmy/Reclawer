@@ -205,7 +205,37 @@ def _loose(key, cands, floor=0.6):
     return best if best is not None and score >= floor else None
 
 
-def match(c, project, developer, sheets, assigned=None, alias_before=None):
+MATCHER = os.getenv("MATCHER", "legacy")  # legacy (default) / v2 / shadow (legacy decides, disagreements logged)
+
+
+def match(c, project, developer, sheets, assigned=None, alias_before=None, chat_jid=None, field="",
+          source_kind="message", location="", mode=None):
+    """{sheet: (row, match_state, label)}. MATCHER picks the implementation (see matcher.py)."""
+    mode = mode or MATCHER
+    if mode == "legacy":
+        return match_legacy(c, project, developer, sheets, assigned, alias_before)
+    import matcher
+    v2 = matcher.decide(c, project, developer, sheets, assigned, chat_jid, field, source_kind, location, alias_before)
+    if mode == "v2":
+        return {s: t[:3] for s, t in v2.items()}
+    legacy = match_legacy(c, project, developer, sheets, assigned, alias_before)
+    if not alias_before:
+        _log_shadow(c, project, developer, legacy, v2)
+    return legacy
+
+
+def _log_shadow(c, project, developer, legacy, v2):
+    for sheet in set(legacy) | set(v2):
+        a, b = legacy.get(sheet), v2.get(sheet)
+        ka, kb = (row_key_of(a[0]) if a else None), (row_key_of(b[0]) if b else None)
+        if ka != kb:
+            c.execute("INSERT INTO matcher_shadow(ts,project,developer,sheet,legacy_key,legacy_state,v2_key,v2_state,"
+                      "v2_p) VALUES(?,?,?,?,?,?,?,?,?)", (int(time.time()), project, developer or "", sheet, ka,
+                                                          a[1] if a else None, kb, b[1] if b else None,
+                                                          b[3] if b else None))
+
+
+def match_legacy(c, project, developer, sheets, assigned=None, alias_before=None):
     # alias_before (eval replay): only aliases and approval-created rows that existed before that time
     """{sheet: (row, match_state, label)} for the best row per sheet. match_state: exact / alias / near.
     When the developer is known (from the message or the chat's developer profile) that developer's rows are tried
@@ -325,7 +355,8 @@ def add_proposal(c, item):
     loc = (item.get("location_code") or "").strip().lower()
     sheets = _sheets_for(field)
     assigned = profiles.assigned_keys(c, item.get("chat_jid"))
-    hits = match(c, project, item.get("developer", ""), sheets, assigned)
+    hits = match(c, project, item.get("developer", ""), sheets, assigned, chat_jid=item.get("chat_jid"), field=field,
+                 source_kind=item["source_kind"], location=loc)
     written = 0
     targets = []
     for sheet, (row, state, label) in hits.items():
@@ -464,6 +495,9 @@ def decide_detail(ids, action, sheet="", actor="person", reason=None):
                 c.execute("INSERT OR REPLACE INTO master_aliases(alias_key,project_key,label,confirmed_at,developer_key) "
                           "VALUES(?,?,?,?,?)", (p["project_key"], row["project_key"], p["project"], now,
                                                 normalize.compact(row["developer"])))
+                c.execute("INSERT OR REPLACE INTO dev_aliases(alias_key,developer_key,project_key,label,confirmed_at) "
+                          "VALUES(?,?,?,?,?)", (p["project_key"], normalize.compact(row["developer"]),
+                                                row["project_key"], p["project"], now))
             final = c.execute("SELECT * FROM master_rows WHERE id=?", (row_id,)).fetchone()
             c.execute("UPDATE proposals SET state='approved', decided_at=?, row_id=?, decided_by=?, row_key=? "
                       "WHERE id=?", (now, row_id, by, row_key_of(final) if final else p["row_key"], pid))

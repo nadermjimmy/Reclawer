@@ -140,3 +140,39 @@ def test_sheet_view(env):
     changed = client.get("/api/sheet", params={"sheet": "New Cairo", "view": "changed"}).json()
     assert changed["total"] <= r["total"] and all(x["changes"] or x["pending"] for x in changed["rows"])
     assert client.get("/api/sheet", params={"sheet": "Sheet 2", "q": "hyde"}).json()["total"] >= 1
+
+
+def test_brain_matcher_v2(env, monkeypatch):
+    """BRAIN_MATCHER=v2: the matcher places confident suggestions without an LLM call; the rest go to the tie-break
+    model with at most the matcher's top 3 rows. MATCH_AUTO unset: everything goes to the tie-break model."""
+    db, master = env
+    import brain, llm, matcher
+    with db.connect() as c:
+        c.execute("DELETE FROM proposals")
+        c.execute("DELETE FROM brain_reviews")
+    p1 = _add(master, db, "b0", "زد ايست", "apartment_2", "131/7,600,000")
+    p2 = _add(master, db, "b4", "Sunset Hills", "apartment_3", "160/9,000,000", developer="")
+    calls = []
+
+    def fake(system, content, schema, max_tokens=0, model=None, **kw):
+        groups = json.loads(content)["groups"]
+        calls.append((model, [len(g["candidates"]) for g in groups]))
+        return {"decisions": [{"proposal_id": s["proposal_id"], "verdict": "unsure", "row_id": 0, "confidence": "low",
+                               "reason": "?"} for g in groups for s in g["suggestions"]]}
+
+    monkeypatch.setattr(llm, "call_json", fake)
+    monkeypatch.setattr(brain, "BRAIN_MATCHER", "v2")
+    monkeypatch.setattr(matcher, "MATCH_AUTO", None)
+    brain.review(lambda *_: None, jids=[CHAT])
+    assert calls and all(m == brain.TIEBREAK_MODEL for m, _ in calls)
+    assert all(n <= 4 for _, ns in calls for n in ns)
+    # with a threshold the matcher's confident placement skips the LLM and still goes through safe_to_approve
+    monkeypatch.setattr(matcher, "MATCH_AUTO", 0.55)
+    calls.clear()
+    brain.review(lambda *_: None, jids=[CHAT], redo=True)
+    with db.connect() as c:
+        b = c.execute("SELECT * FROM brain_reviews WHERE proposal_id=?", (p1["id"],)).fetchone()
+        p = c.execute("SELECT p.*, r.project rp FROM proposals p LEFT JOIN master_rows r ON r.id=p.row_id "
+                      "WHERE p.id=?", (p1["id"],)).fetchone()
+    assert b["model"].startswith("matcher-") and p["rp"] == "ZED East"
+    assert calls

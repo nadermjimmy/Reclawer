@@ -233,6 +233,20 @@ def rebuild(log):
         f"{len(issues)} review items")
 
 
+LINK_THRESHOLD = 0.9
+
+
+def _rank_hits(label, names):
+    """Projects the unified matcher (matcher.rank) puts at or above LINK_THRESHOLD; an exact name wins over others."""
+    if not label:
+        return set()
+    import matcher
+    ranked = matcher.rank(label, list(set(names.values())), LINK_THRESHOLD)
+    exact = [n for n, s in ranked if s >= 0.999]
+    keep = set(exact) if len(exact) == 1 else {n for n, _ in ranked}
+    return {pid for pid, n in names.items() if n in keep}
+
+
 def link_facts(c, issue):
     """Attach each fact to a project via the alias table; flag conflicts and missing required facts."""
     aliases = {}
@@ -244,8 +258,7 @@ def link_facts(c, issue):
     for f in c.execute("SELECT id, raw_project_label FROM fact_assertions WHERE validation_status<>'rejected'"
                        ).fetchall():
         label = (f["raw_project_label"] or "").strip().lower()
-        hits = aliases.get(label) or {pid for pid, n in names.items() if label and
-                                      (n.lower() in label or label in n.lower())}
+        hits = aliases.get(label) or _rank_hits(label, names)
         if len(hits) == 1:
             c.execute("INSERT INTO fact_links VALUES(?,?)", (f["id"], next(iter(hits))))
         elif label:

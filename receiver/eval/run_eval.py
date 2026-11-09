@@ -35,12 +35,13 @@ def _sheets_for(field):
     return [s for s, k in ms.SHEETS.items() if k in kinds]
 
 
-def replay_match(c, item):
-    """What today's matcher says for this suggestion: (row_key or None, match_state)."""
+def replay_match(c, item, mode="legacy"):
+    """What the matcher (legacy or v2) says for this suggestion: (row_key or None, match_state)."""
     assigned = profiles.assigned_keys(c, item.get("chat_jid"))
     dev = item["developer"] or item.get("chat_developer") or ""
     hits = master.match(c, item["project"], dev, _sheets_for(item["field"]), assigned,
-                        alias_before=item["decided_at"])
+                        alias_before=item["decided_at"], chat_jid=item.get("chat_jid"), field=item["field"],
+                        source_kind=item["source_kind"], mode=mode)
     if not hits:
         return None, "new"
     sheet = item["sheet"] if item["sheet"] in hits else next(iter(hits))
@@ -48,7 +49,7 @@ def replay_match(c, item):
     return master.row_key_of(row), state
 
 
-def matching_metrics(c, matching):
+def matching_metrics(c, matching, mode="legacy"):
     per = {k: {"tp": 0, "fp": 0, "fn": 0, "nve_ok": 0, "nve_n": 0, "n": 0} for k in KINDS}
     cross, misses = [], []
     for it in matching:
@@ -57,7 +58,7 @@ def matching_metrics(c, matching):
             continue
         k = per[it["source_kind"]]
         k["n"] += 1
-        pred, state = replay_match(c, it)
+        pred, state = replay_match(c, it, mode)
         gold = lab.get("row_key") if lab["type"] == "row" else None
         k["nve_n"] += 1
         k["nve_ok"] += (pred is None) == (gold is None)
@@ -127,6 +128,31 @@ def auto_approve_metrics(c):
             "precision_upper_bound": _ratio(total - reopened, total)}
 
 
+def noise_filter_metrics(c, matching):
+    """Phase 4: of the gold MESSAGE items a person approved (real offers), how many would the noise filter skip."""
+    try:
+        import noise
+    except Exception:
+        return None
+    m, ver = noise.model()
+    if m is None:
+        return None
+    thr = noise.SKIP if noise.SKIP is not None else noise.DEFAULT_REPORT_THRESHOLD
+    offers, noisy = [], []
+    for it in matching:
+        if it["source_kind"] != "message":
+            continue
+        t = c.execute("SELECT text FROM source_messages WHERE wa_id=?", (it["source_ref"],)).fetchone()
+        if not t or not t[0]:
+            continue
+        (offers if it["label"]["type"] in ("row", "new_project") else
+         noisy if it["label"]["type"] == "noise" and it["label"].get("reason") == "not_an_offer" else []).append(t[0])
+    po, pn = noise.p_offer(offers), noise.p_offer(noisy)
+    fs = sum(p < thr for p in po)
+    return {"model": ver, "threshold": thr, "offers": len(po), "false_skips": fs,
+            "false_skip_rate": _ratio(fs, len(po)), "skip_share_noise": _ratio(sum(p < thr for p in pn), len(pn))}
+
+
 def llm_metrics(c, days=7):
     created = c.execute("SELECT COUNT(*) FROM proposals").fetchone()[0]
     reviewed = c.execute("SELECT COUNT(*) FROM brain_reviews").fetchone()[0]
@@ -187,8 +213,13 @@ def run(gold_dir=None, llm_sample=0, max_usd=0.0):
             matching, extraction = build_gold.collect(c)
             meta = build_gold.meta_of(matching)
         match, cross, misses = matching_metrics(c, matching)
+        match_v2, cross_v2, _ = matching_metrics(c, matching, "v2")
         replay = llm_replay(extraction, llm_sample, max_usd) if llm_sample else None
+        import matcher
+        shadow = c.execute("SELECT COUNT(*) FROM matcher_shadow").fetchone()[0]
         return {"generated_at": int(time.time()), "gold": meta, "matching": match, "llm_replay": replay,
+                "matching_v2": match_v2, "cross_script_misses_v2": cross_v2, "matcher_model": matcher.model()[1],
+                "shadow_disagreements": shadow, "noise_filter": noise_filter_metrics(c, matching),
                 "cross_script_misses": cross, "misses": misses[:200],
                 "noise": noise_metrics(c, matching), "extraction": extraction_metrics(extraction),
                 "auto_approve": auto_approve_metrics(c), "llm": llm_metrics(c)}
@@ -212,6 +243,20 @@ def report_md(r, title="Eval report"):
         lines.append(f"| {k} | {cnt} | {pct(m.get('precision'))} | {pct(m.get('recall'))} | "
                      f"{pct(m.get('new_vs_existing_acc'))} | {pct(n.get('precision'))} | {pct(n.get('recall'))} | "
                      f"{pct(e.get('accepted'))} |")
+    if r.get("matching_v2"):
+        lines += ["", f"### Unified matcher (v2, model: {r.get('matcher_model')}) on the same gold", "",
+                  "| Source kind | Match precision | Match recall | New vs existing |", "|---|---|---|---|"]
+        for k in list(KINDS) + ["all"]:
+            m = r["matching_v2"].get(k, {})
+            lines.append(f"| {k} | {pct(m.get('precision'))} | {pct(m.get('recall'))} | {pct(m.get('new_vs_existing_acc'))} |")
+        lines += ["", f"Cross-script misses: legacy {len(r['cross_script_misses'])}, v2 {len(r['cross_script_misses_v2'])}. "
+                  f"Shadow disagreements logged: {r.get('shadow_disagreements', 0)}."]
+    nf = r.get("noise_filter")
+    if nf:
+        lines += ["", "### Noise filter (text messages)", "",
+                  f"Model {nf['model']}; threshold {nf['threshold']}; false-skip rate on gold offers "
+                  f"{pct(nf['false_skip_rate'])} ({nf['false_skips']} of {nf['offers']}); would skip "
+                  f"{pct(nf['skip_share_noise'])} of gold noise. In-sample when the model was trained on these labels."]
     lines += ["", "Labels: " + ", ".join(f"{k} {v}" for k, v in sorted(g["by_label"].items())) or "none", "",
               "## Values accepted per field", "", "| Field | Decisions | Accepted |", "|---|---|---|"]
     lines += [f"| {f} | {v['n']} | {pct(v['accepted'])} |" for f, v in r["extraction"]["by_field"].items()]

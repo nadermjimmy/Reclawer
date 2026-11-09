@@ -149,6 +149,15 @@ CREATE TABLE IF NOT EXISTS llm_usage(
     id INTEGER PRIMARY KEY, ts INTEGER, purpose TEXT, model TEXT, input_tokens INTEGER, output_tokens INTEGER,
     cache_read INTEGER, cache_write INTEGER, batch INTEGER DEFAULT 0);
 
+-- Phase 2: developer-scoped aliases (a name can mean different projects for different developers; '' = any)
+CREATE TABLE IF NOT EXISTS dev_aliases(
+    alias_key TEXT NOT NULL, developer_key TEXT NOT NULL DEFAULT '', project_key TEXT, label TEXT,
+    confirmed_at INTEGER, PRIMARY KEY(alias_key, developer_key));
+-- MATCHER=shadow: where the new matcher disagrees with the legacy one (proposals still use legacy)
+CREATE TABLE IF NOT EXISTS matcher_shadow(
+    id INTEGER PRIMARY KEY, ts INTEGER, project TEXT, developer TEXT, sheet TEXT, legacy_key TEXT,
+    legacy_state TEXT, v2_key TEXT, v2_state TEXT, v2_p REAL);
+
 CREATE TABLE IF NOT EXISTS jobs(
     id INTEGER PRIMARY KEY, name TEXT, status TEXT, started_at INTEGER, finished_at INTEGER, log TEXT);
 """
@@ -184,6 +193,9 @@ def init():
                                       "reject_reason TEXT", "label_row_id INTEGER"])
         _add_columns(c, "brain_reviews", ["row_key TEXT"])
         _add_columns(c, "master_aliases", ["developer_key TEXT"])
+        # developer-scoped aliases start from the global ones (developer_key '' = any developer, today's behaviour)
+        c.execute("INSERT OR IGNORE INTO dev_aliases(alias_key,developer_key,project_key,label,confirmed_at) "
+                  "SELECT alias_key, COALESCE(developer_key,''), project_key, label, confirmed_at FROM master_aliases")
         cols = {r[1] for r in c.execute("PRAGMA table_info(proposals)")}
         if "decided_by" not in cols:  # 'brain' when the brain approved or rejected it, else a person
             c.execute("ALTER TABLE proposals ADD COLUMN decided_by TEXT")
