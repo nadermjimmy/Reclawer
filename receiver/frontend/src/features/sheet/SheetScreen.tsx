@@ -1,4 +1,4 @@
-import { Check, RotateCcw, Sparkles, X } from "lucide-react";
+import { Check, Download, FileSpreadsheet, RotateCcw, Sparkles, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useSearchParams } from "react-router-dom";
 import { errorText } from "../../api/client";
@@ -6,7 +6,8 @@ import { decide, reopen } from "../../api/proposals";
 import { getSheet, type SheetCell, type SheetChange, type SheetColumn, type SheetData, type SheetRow, type SheetView } from "../../api/sheet";
 import { Button, ButtonLink, Drawer, EmptyState, ErrorBanner, SearchInput, Segmented, Skeleton, useToast } from "../../components";
 import { useIsPhone } from "../../lib/hooks";
-import { relTime } from "../../lib/format";
+import { fmtDateTime, relTime } from "../../lib/format";
+import { useSession } from "../../app/session";
 import { usePageTitle } from "../../app/title";
 import { SheetGrid } from "./SheetGrid";
 import { STATE_NOTE, address, cellOf, columnWidths, displayValue, fmtDateLong, hasDetails, isDateCol, rawValue, type Pos, type Shown } from "./model";
@@ -33,6 +34,7 @@ export function SheetScreen() {
   usePageTitle("Sheet");
   const toast = useToast();
   const phone = useIsPhone();
+  const { me } = useSession();
   const [params, setParams] = useSearchParams();
   const sheet = params.get("sheet") ?? "";
   const [view, setView] = useState<SheetView>("all");
@@ -158,9 +160,26 @@ export function SheetScreen() {
 
   return (
     <div className="sheetview">
+      <div className="sg-doc">
+        <FileSpreadsheet className="sg-doc-icon" size={28} aria-hidden="true" />
+        <div className="sg-doc-text">
+          <span className="sg-doc-name" dir="auto">{me?.master?.file_name?.replace(/\.xlsx$/i, "") ?? "Master workbook"}</span>
+          <span className="sg-doc-meta">
+            {me?.master ? `Uploaded ${fmtDateTime(me.master.imported_at)} · ` : ""}
+            {shown === "current" ? "Showing values after approvals" : "Showing values as uploaded"} · read-only
+          </span>
+        </div>
+        {me?.has_master && (
+          <a className="sg-doc-btn" href="/api/master/export/team" download>
+            <Download size={16} aria-hidden="true" /> Download
+          </a>
+        )}
+      </div>
       <div className="sg-toolbar">
         <Segmented label="Rows" items={VIEWS} value={view} onChange={setView} size="sm" />
+        <span className="sg-sep" aria-hidden="true" />
         <Segmented label="Values" items={VALUES} value={shown} onChange={setShown} size="sm" />
+        <span className="sg-sep" aria-hidden="true" />
         <SearchInput ref={searchRef} label="Search project or developer" placeholder="Project or developer"
           value={query} onChange={(e) => setQuery(e.target.value)} className="sg-search"
           onKeyDown={(e) => {
