@@ -1,6 +1,6 @@
 # PLAN: a brain that learns from every human decision (Egypt only)
 
-Status: draft for approval. No code has changed. Scope: MARKET=eg. UAE code paths are left untouched.
+Status: draft for approval. No code has changed. Scope: MARKET=eg. UAE code paths are left untouched. No embedding APIs or embedding models: text similarity is char n-gram TF-IDF (scikit-learn) only.
 
 ---
 
@@ -93,6 +93,11 @@ The same applies to every phase:
   - lowercase and collapsed punctuation
   - common Franco forms (2→ء/ا, 3→ع, 7→ح, 5→خ; used only for keys, never shown)
   - stop words for developer prefixes and "compound / phase / residence / tower / el / al / مشروع / كمبوند / فيز", with a `strip_generic()` variant
+  - `translit_key(text)`: a deterministic Arabic → Latin key, so 'ماونتن فيو' and 'Mountain View' can be compared:
+    - a fixed letter map (e.g. ث→th, خ→kh, ش→sh, ج→g as Egyptians write it, ق→k/q merged)
+    - then a **consonant skeleton** on both sides (vowels, w/y and doubled letters dropped)
+    - letters Arabic lacks are folded: p→b, v→f, x→ks, c→k/s
+    - so 'ماونتن فيو' and 'Mountain View' both become `mntn f`, and 'بالم هيلز' and 'Palm Hills' both become `blm hlz`
   - `row_key(developer, project, sheet)`
 - `receiver/db.py`: additive columns only:
   - `proposals.row_key`, `proposals.first_row_key`, `proposals.first_match_state` (written by `add_proposal`; before this, the first match is lost)
@@ -113,6 +118,7 @@ The same applies to every phase:
   - **Optional LLM replay, paid:** behind `--llm --sample N --max-usd X`. It covers brain verdicts on matching items and extraction on a sample per source kind, and prints the cost estimate before running.
   - **Metrics:**
     - match precision and recall, and top-k recall of candidate retrieval
+    - **cross-script misses** listed separately: Arabic name vs Latin row, or the other way round
     - new-vs-existing accuracy
     - noise precision and recall
     - extraction field accuracy per field and per source kind (exact after normalization and rounding)
@@ -136,8 +142,8 @@ The same applies to every phase:
 - `receiver/matcher.py`: one matcher. `candidates()`, `features()`, `score()`, `decide()`. Plus `rank(name, names)` for generic name lists (inventory projects, developers).
   - **Candidates:**
     - alias hit (developer-aware)
-    - rapidfuzz `token_set_ratio`, `partial_ratio` and `WRatio` on `normalize`d and `strip_generic` keys
-    - embedding cosine against cached row embeddings (project + developer)
+    - rapidfuzz `token_set_ratio`, `partial_ratio` and `WRatio` on `normalize`d and `strip_generic` keys **and** on `translit_key`s
+    - char n-gram TF-IDF cosine over row names (project + developer): `TfidfVectorizer(analyzer='char_wb', ngram_range=(2,4))` on normalized text, plus a second vectorizer on transliteration keys so both scripts land in one space
     - the same developer's rows
     - rows this chat updated before
   - **Pairwise features:**
@@ -150,11 +156,11 @@ The same applies to every phase:
     - name length ratio
     - source kind
     - Arabic/Latin script mismatch flag
-- `receiver/embeddings.py`: Voyage AI multilingual embeddings via the official `voyageai` SDK.
-  - The model name is pinned after checking current docs at implementation time: `voyage-multilingual-2` or its current successor, whichever the docs say is recommended for Arabic + English.
-  - Key from `VOYAGE_API_KEY`.
-  - **Cache:** table `embeddings(sha256(model + normalized text) PRIMARY KEY, model, dim, vector BLOB, created_at)`. Never embed the same text twice. Requests are batched.
-  - **No key or no network:** the embedding feature is skipped and the model uses the remaining features.
+- `receiver/textsim.py`: a shared char n-gram TF-IDF helper.
+  - Fitted per use: master row names for the matcher; learned examples per source kind (Phase 3); messages (Phase 4).
+  - The fitted vectorizer and matrix are cached under `/data/models/tfidf-<use>-<hash of the fitted corpus>.joblib`.
+  - It is refitted only when the corpus changes, for example after a master re-upload or new examples.
+  - No external API.
 - `receiver/train_matcher.py`:
   - Builds pairs from gold matching items (positive = labelled row; negatives = other top-k candidates).
   - Model: LightGBM, or logistic regression when there are fewer than 300 labels, wrapped in `CalibratedClassifierCV`.
@@ -171,29 +177,29 @@ The same applies to every phase:
   - **Noise judgement:** stays an LLM call (Haiku, batched) only for suggestions the matcher can't place.
   - **Auto-approve:** still needs `safe_to_approve` plus a new `BRAIN_AUTO_APPROVE` flag (default OFF from this phase on; today the brain auto-approves with no flag, see the open question below).
 - `receiver/build.py` (`link_facts`): project matching uses `matcher.rank` with a strict threshold, keeping the "exactly one project" rule. No prompt or logic change elsewhere in facts, mapping or media_review.
-- `receiver/requirements.txt`: pin `rapidfuzz`, `scikit-learn`, `lightgbm`, `numpy`, `voyageai` at exact versions released at least 2 weeks ago.
+- `receiver/requirements.txt`: pin `rapidfuzz`, `scikit-learn`, `lightgbm`, `numpy` (and `joblib`, which comes with scikit-learn) at exact versions released at least 2 weeks ago.
 - `receiver/Dockerfile`: `apt-get install libgomp1`, which LightGBM needs on slim images.
 - **camel-tools:** only if it installs cleanly in the image. It is not planned by default, because its model downloads are large.
-- **Tests:** `tests/test_matcher.py` (normalization cases, candidate recall, decide bands, legacy/v2/shadow equivalence where expected, no-Voyage fallback, embedding cache hit), `tests/test_train_matcher.py` (small synthetic set; model saved with metadata; calibrated output in [0,1]).
+- **Tests:** `tests/test_matcher.py` (normalization and transliteration cases, cross-script candidate recall, TF-IDF cache reuse and refit, decide bands, legacy/v2/shadow equivalence where expected), `tests/test_train_matcher.py` (small synthetic set; model saved with metadata; calibrated output in [0,1]).
 
 ### Phase 3: Learning memory + dynamic few-shot
 - **`receiver/db.py`:** new table `learned_examples`, with these columns:
   - `id`, `source_kind`, `source_ref`, `input_text`, or for files a reference plus a short text excerpt (PDF page text, sheet row cells)
-  - `chat_developer_key`, `row_key`, `field`, `output_json` (what was extracted)
-  - `decision` (approved/rejected/reopened), `reason`, `embedding_id` (FK to `embeddings`), `created_at`
+  - `normalized_text`, `chat_jid`, `chat_developer_key`, `project_key`, `row_key`, `field`, `output_json` (what was extracted)
+  - `decision` (approved/rejected/reopened), `reason`, `created_at`
   - Keyed by `row_key` and developer, never by `master_rows.id`, so it survives re-uploads.
 - **`master.decide_detail`:** gains an `actor` argument (`'person'`/`'brain'`). The brain path passes `'brain'`, which is all it changes. Only `actor='person'` decisions and Reopen write examples.
 - **`receiver/memory.py`:** `record(...)` and `retrieve(source_kind, query_text, developer_key, k=FEWSHOT_K)`.
   - `FEWSHOT_K` defaults to 6.
   - Results are balanced between approved and rejected, with the same developer preferred.
-  - Ranking is by embedding cosine over cached embeddings.
+  - Ranking is by char n-gram TF-IDF cosine over `normalized_text` of the same source kind, with a boost for the same `project_key` and for the same chat.
 - **`proposals.py` / `brain.py`:** under `FEWSHOT=1` (default off), the retrieved examples go in the **user turn** after the source. System prompts stay byte-identical, so they cache. This also works in batch mode, because the examples are baked into each request.
   - **Retrieval is per request, not per message.** A text request holds 60 messages, so I'll take the top-k over the chunk (best example per message, deduplicated, capped at k).
-- **`receiver/rule_suggestions.py`:** weekly on the poller. It clusters rejection reasons and the rejected inputs (embeddings + agglomerative clustering) into **suggested** additions to owner_rules_eg.json (not-a-project names, locations, blocklist terms). They are written to `/data/review/rule-suggestions-<date>.json` and shown read-only. **Never auto-applied.**
+- **`receiver/rule_suggestions.py`:** weekly on the poller. It groups rejection reasons and the rejected inputs (by reason, then char n-gram TF-IDF + agglomerative clustering) into **suggested** additions to owner_rules_eg.json (not-a-project names, locations, blocklist terms). They are written to `/data/review/rule-suggestions-<date>.json` and shown read-only. **Never auto-applied.**
 - **Tests:** `test_memory.py` covers record on person decide only, survival across re-upload, balanced retrieval, prompt prefix unchanged, and batch params including the examples.
 
 ### Phase 4: Noise filter for text messages
-- **`receiver/noise.py`:** embeddings + logistic regression.
+- **`receiver/noise.py`:** char n-gram TF-IDF on normalized message text + logistic regression (class-weighted).
   - **Positives (noise):** messages whose proposals a person rejected with reason "not an offer" (resale / client unit / request / chatter), or that the brain marked noise and a person didn't reopen.
   - **Negatives:** messages with approved proposals.
   - **Saved to** `/data/models/noise-<version>/`.
@@ -256,11 +262,15 @@ The same applies to every phase:
 5. **"Promote only if no metric drops" will freeze the models.** With a small gold set, every metric moves by a few points between runs from noise alone. I'd promote when the primary metric (match precision at the chosen coverage) improves or holds, and no secondary metric drops by more than 1 standard error (bootstrap) or 2 points, whichever is larger.
 6. **Few-shot retrieval should be per request, not per message.** Per message would add 60×k examples to each text request. I planned top-k over the chunk, capped at k.
 7. **Expect very few labels at first.** The system went live this week, so the gold set is probably well under 200. LightGBM won't be trained before ~300 labels (the brief already says logistic regression). Thresholds for precision ≥ 0.98 will have **wide confidence intervals** until there are a few hundred labels per source kind. I'll show the intervals, not just the point values.
-8. **Data access.** This sandbox can't reach the production database or Voyage. The gold set, BASELINE.md and real metrics come from a run in the Railway container (pipeline step / `railway ssh`). In this sandbox I can only test on synthetic data.
+8. **Data access.** This sandbox can't reach the production database. The gold set, BASELINE.md and real metrics come from a run in the Railway container (pipeline step / `railway ssh`). In this sandbox I can only test on synthetic data.
+9. **Transliteration is lossy for English names written in Arabic.** 'ماونتن فيو' carries no vowels, so the key compares consonant skeletons (both sides → `mntn f`). That catches most loanword names (Mountain View, Palm Hills, Hyde Park, Zed). It will miss names whose Arabic spelling drops or swaps consonants, and names with a genuinely Arabic name next to an English brand (e.g. 'بالم هيلز' vs 'Palm Hills' works; 'الربوة' vs 'Rabwa' works; 'مدينتي' vs 'Madinaty' works; 'سوديك ويست' vs 'SODIC West' works; but a project the team renamed in English won't). Three things cover the rest:
+   - The same-developer and chat-history features.
+   - The alias table, which learns from every approved near match.
+   - The cross-script miss list in the eval, so you can see how big the remainder is.
+10. **TF-IDF across scripts:** char n-grams of Arabic text share no characters with Latin rows, so cosine is 0 across scripts. That's why there is a second TF-IDF on transliteration keys. Without it, the feature would only help within one script.
 
 ## 7. Open questions
 
 1. **Brain auto-decisions (concern 1):** flags default ON for today's two behaviours, or OFF?
 2. **Reject-reason picker (concern 2):** OK to add it in Phase 1?
-3. **Voyage:** please add `VOYAGE_API_KEY` to the receiver service on Railway before Phase 2. This sandbox can't reach Voyage, so tests mock it.
-4. **Running the baseline:** can I add the eval as a pipeline step (no LLM by default), so you or I can run it in the container and paste the output into BASELINE.md?
+3. **Running the baseline:** can I add the eval as a pipeline step (no LLM by default), so you or I can run it in the container and paste the output into BASELINE.md?
