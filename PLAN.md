@@ -83,6 +83,49 @@ The same applies to every phase:
 - **Unchanged:** the reading order and 14-day rule, owner_rules as the override layer, and the never-auto fields.
 - **Sales data:** no sales name, contact, phone, voice note or ID is read or proposed.
 
+### Phase 0: Group → developer / projects assignment (ops-team labels)
+
+**Why:** each ingestion currently guesses again which developer and project a group is about. The team knows. Their assignment should be stored once, used by every source, and kept as learning data.
+
+**What exists already:** `chat_profiles` (`profiles.py`) holds one developer per chat, filled from "X & Byit App" and editable through the chat-header chip as free text. Extraction prompts, `master.match` (the developer's rows first) and the brain already read it.
+
+**Files**
+- **`receiver/db.py`:**
+  - New table `chat_projects(jid, developer_key, project_key, project_label, sheet, assigned_by, assigned_at, PRIMARY KEY(jid, project_key))`. It is keyed by normalized developer and project, not `master_rows.id`, so it survives a master re-upload.
+  - New columns `chat_profiles.assigned_by` and `chat_profiles.assigned_at`.
+  - New table `assignment_log(jid, field, old, new, by, at)`, an append-only history of every team change. This is the learning label.
+- **`receiver/profiles.py`:**
+  - `assign(jid, developer, project_keys, by)` checks the developer against the master's developers. Only a master developer is accepted, with no free text, unless the team picks "Not on the sheet yet".
+  - `assigned_projects(jid)`
+  - `relink_projects(c)` runs on master import and maps `project_key` (+ developer) to the new rows, listing any it can't place.
+  - Auto-fill from the chat name stays, marked `source='auto'` and shown as "Suggested". It never counts as a team label.
+- **`receiver/master.py` (`match`):** tries the group's assigned projects first, then the developer's other rows, then the existing order. A hit outside the assignment is marked `match_state='near'` with the warning "Outside this group's assigned projects". The rest of the order is unchanged.
+- **`receiver/proposals.py`:** the chat profile line in extraction prompts also names the assigned projects (user turn, so system prompts stay cacheable). `_store` uses the assigned developer when the message doesn't name one. This is the same behaviour as today, with better data.
+- **`receiver/brain.py`:**
+  - Candidates start with the assigned projects.
+  - **`safe_to_approve` refuses anything outside the group's assignment.** This makes auto-approve stricter, never looser.
+  - The profile line passed to the model names the assigned projects.
+- **`receiver/api.py`:**
+  - `GET/PUT /api/chats/{jid}/assignment` returns the developer dropdown options (master developers) and that developer's projects grouped by sheet.
+  - `GET /api/chats?filter=unassigned`
+  - `POST /api/chats/assign` for bulk developer assignment.
+- **Frontend:**
+  - **Chat header:** a developer **dropdown** (searchable list of master developers) and a project multi-select (the chosen developer's projects, by sheet). It replaces the small chip, which is kept as the read-only display in the chat list.
+  - **Chat list:** an "Unassigned" filter chip, and bulk assign of a developer to selected groups.
+  - **Sheet view:** the formula bar shows which groups feed the row.
+- **Phase 1 eval:** the assignment is used as a label source for matching (group → project).
+- **Phase 2 matcher:** adds the features "candidate is in this group's assigned projects" and "assigned developer match".
+- **Tests:** `test_assignment.py` covers:
+  - only master developers accepted
+  - projects survive a master re-upload through `relink_projects`
+  - assigned projects matched first
+  - an outside-assignment match becomes near and is never auto-approved
+  - bulk assign
+  - the assignment log written
+  - auto-fill not counted as a team label
+
+**Behaviour change:** matching prefers what the team set, and the brain auto-approves less, never more. Matching only changes for groups the team has assigned. Groups with no assignment behave exactly as today.
+
 ### Phase 1: Eval harness (no behaviour change)
 
 **Files**
