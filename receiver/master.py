@@ -479,6 +479,8 @@ def decide_detail(ids, action, sheet="", actor="person", reason=None):
             if action == "reject":
                 c.execute("UPDATE proposals SET state='rejected', decided_at=?, decided_by=?, reject_reason=? "
                           "WHERE id=?", (now, by, reason if reason in REJECT_REASONS else None, pid))
+                if by is None:
+                    _learn(c, pid, "rejected")
                 done.append(pid)
                 continue
             row_id = p["row_id"]
@@ -501,11 +503,22 @@ def decide_detail(ids, action, sheet="", actor="person", reason=None):
             final = c.execute("SELECT * FROM master_rows WHERE id=?", (row_id,)).fetchone()
             c.execute("UPDATE proposals SET state='approved', decided_at=?, row_id=?, decided_by=?, row_key=? "
                       "WHERE id=?", (now, row_id, by, row_key_of(final) if final else p["row_key"], pid))
+            if by is None:
+                _learn(c, pid, "approved")
             # older open proposals for the same cell are outdated now
             c.execute("UPDATE proposals SET state='superseded' WHERE state='proposed' AND row_id=? AND field=? "
                       "AND COALESCE(source_ts,0)<=?", (row_id, p["field"], p["source_ts"] or 0))
             done.append(pid)
     return done, skipped
+
+
+def _learn(c, pid, decision):
+    """A person decided: keep it as a learning example (memory.py). Never blocks the decision."""
+    try:
+        import memory
+        memory.record(c, pid, decision)
+    except Exception:
+        pass
 
 
 def _new_row(c, sheet, p, now):

@@ -158,6 +158,14 @@ CREATE TABLE IF NOT EXISTS matcher_shadow(
     id INTEGER PRIMARY KEY, ts INTEGER, project TEXT, developer TEXT, sheet TEXT, legacy_key TEXT,
     legacy_state TEXT, v2_key TEXT, v2_state TEXT, v2_p REAL);
 
+-- Phase 3: learning memory. One row per PERSON decision (and Reopen of a brain decision); keyed by row_key and
+-- developer, never by master_rows.id, so it survives a master re-upload.
+CREATE TABLE IF NOT EXISTS learned_examples(
+    id INTEGER PRIMARY KEY, proposal_id INTEGER, source_kind TEXT, source_ref TEXT, input_text TEXT,
+    normalized_text TEXT, chat_jid TEXT, chat_developer_key TEXT, developer_key TEXT, project_key TEXT, row_key TEXT,
+    field TEXT, output_json TEXT, decision TEXT, reason TEXT, created_at INTEGER);
+CREATE INDEX IF NOT EXISTS ix_le_kind ON learned_examples(source_kind, id);
+
 CREATE TABLE IF NOT EXISTS jobs(
     id INTEGER PRIMARY KEY, name TEXT, status TEXT, started_at INTEGER, finished_at INTEGER, log TEXT);
 """

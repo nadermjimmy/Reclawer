@@ -374,6 +374,8 @@ async def reject_reason(request: Request):
     with db.connect() as c:
         n = c.execute(f"UPDATE proposals SET reject_reason=? WHERE id IN ({','.join('?' * len(ids))}) "
                       "AND state='rejected' AND decided_by IS NULL", [d["reason"], *ids]).rowcount
+        c.execute(f"UPDATE learned_examples SET reason=? WHERE decision='rejected' AND proposal_id IN "
+                  f"({','.join('?' * len(ids))})", [d["reason"], *ids])
     return {"updated": n}
 
 

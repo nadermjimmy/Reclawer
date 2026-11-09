@@ -70,6 +70,22 @@ IMAGE_MAX = 5 * 1024 * 1024        # API limit per image
 PDF_PAGES_PER_REQUEST = 20
 PDF_MAX = 24 * 1024 * 1024         # keep each request well under the 32 MB request limit
 BATCH_MAX = 200 * 1024 * 1024      # keep each batch under the 256 MB batch limit
+FEWSHOT = os.getenv("FEWSHOT", "0") == "1"  # Phase 3: past person decisions in the user turn (default off)
+
+
+def _examples(c, kind, texts, developer, jid):
+    """Past decisions for one request (top-k over the whole chunk), or None. Never changes the system prompt."""
+    if not FEWSHOT:
+        return None
+    import memory
+    ex = memory.retrieve_multi(c, kind, texts, developer, jid=jid)
+    return memory.as_prompt(ex) if ex else None
+
+
+def _with_examples(content, ex):
+    if ex:
+        content.append({"type": "text", "text": "past_decisions: " + json.dumps(ex, ensure_ascii=False)})
+    return content
 
 
 # ---------- work units ----------
@@ -146,6 +162,9 @@ def text_units(c, jids=None, skip=None, batch=60):
             body = {"chat": names.get(jid, jid), "chat_profile": profiles.describe(prof),
                     "messages": [{"source_id": m["wa_id"], "time": m["ts"], "text": m["text"],
                                   "attached_file": m["file_name"]} for m in chunk]}
+            ex = _examples(c, "message", [m["text"] for m in chunk], dev, jid)
+            if ex:
+                body["past_decisions"] = ex
             out.append(_unit(f"t{chunk[0]['wa_id']}"[:60], "text",
                              f"{names.get(jid, jid)}: messages {i + 1}-{i + len(chunk)}", llm.MODEL,
                              json.dumps(body, ensure_ascii=False),
@@ -175,6 +194,9 @@ def sheet_units(c, jids=None, skip=None, chunk_rows=150):
             lines = [l for l in lines if l["text"].strip()]
             body = {"file": part[0]["file_name"], "sheet": sheet, "chat": ctx["chat"],
                     "chat_profile": ctx["chat_profile"], "rows": lines}
+            ex = _examples(c, "row", [l["text"] for l in lines], ctx.get("developer", ""), ctx.get("jid")) if lines else None
+            if ex:
+                body["past_decisions"] = ex
             out.append(_unit(f"s{part[0]['id']}", "sheets", f"{part[0]['file_name']} / {sheet}", llm.MODEL,
                              json.dumps(body, ensure_ascii=False) if lines else None,
                              {str(r["id"]): ["row", str(r["id"]), ts, ctx.get("developer", ""), ctx.get("jid")] for r in part},
@@ -237,9 +259,12 @@ def pdf_units(c, jids=None, skip=None):
             note = (f"{FILE_RULES}\nFile: {f['file_name']} (pages {a}-{b} of {max(pages)}).\n"
                     f"source_id: write 'p' followed by the page number in the ORIGINAL file, e.g. 'p{a}'.\n"
                     f"Chat context: {json.dumps(ctx, ensure_ascii=False)}")
-            content = [{"type": "document", "source": {"type": "base64", "media_type": "application/pdf",
-                                                       "data": base64.standard_b64encode(data).decode()}},
-                       {"type": "text", "text": note}]
+            content = _with_examples(
+                [{"type": "document", "source": {"type": "base64", "media_type": "application/pdf",
+                                                 "data": base64.standard_b64encode(data).decode()}},
+                 {"type": "text", "text": note}],
+                _examples(c, "pdf_page", [f["file_name"] or "", ctx.get("caption", "")], ctx.get("developer", ""),
+                          ctx.get("jid")))
             out.append(_unit(f"p{f['id']}_{a}", "pdfs", f"{f['file_name']} p{a}-{b}", llm.FILE_MODEL, content,
                              {f"p{n}": ["pdf_page", str(pages[n]), ts, ctx.get("developer", ""), ctx.get("jid")] for n in range(a, b + 1) if n in pages},
                              [key]))
@@ -260,9 +285,11 @@ def image_units(c, jids=None, skip=None):
         ctx = _chat_context(c, r["id"])
         note = (f"{FILE_RULES}\nFile: {r['file_name'] or 'image'}. source_id: write 'img'.\n"
                 f"Chat context: {json.dumps(ctx, ensure_ascii=False)}")
-        content = [{"type": "image", "source": {"type": "base64", "media_type": mt,
-                                                "data": base64.standard_b64encode(open(r["path"], "rb").read()).decode()}},
-                   {"type": "text", "text": note}]
+        content = _with_examples(
+            [{"type": "image", "source": {"type": "base64", "media_type": mt,
+                                          "data": base64.standard_b64encode(open(r["path"], "rb").read()).decode()}},
+             {"type": "text", "text": note}],
+            _examples(c, "image", [r["file_name"] or "", ctx.get("caption", "")], ctx.get("developer", ""), ctx.get("jid")))
         out.append(_unit(f"i{r['id']}", "images", r["file_name"] or f"image {r['id']}", llm.FILE_MODEL, content,
                          {"img": ["image", str(r["rid"]), _file_ts(c, r["id"]), ctx.get("developer", ""), ctx.get("jid")]}, [key]))
     return out
