@@ -166,6 +166,10 @@ CREATE TABLE IF NOT EXISTS learned_examples(
     field TEXT, output_json TEXT, decision TEXT, reason TEXT, created_at INTEGER);
 CREATE INDEX IF NOT EXISTS ix_le_kind ON learned_examples(source_kind, id);
 
+-- Phase 4: text messages the noise filter kept away from the LLM (NOISE_SKIP); re-queueable
+CREATE TABLE IF NOT EXISTS noise_skips(
+    wa_id TEXT PRIMARY KEY, score REAL, model_version TEXT, threshold REAL, skipped_at INTEGER, requeued_at INTEGER);
+
 CREATE TABLE IF NOT EXISTS jobs(
     id INTEGER PRIMARY KEY, name TEXT, status TEXT, started_at INTEGER, finished_at INTEGER, log TEXT);
 """

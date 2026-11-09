@@ -149,6 +149,8 @@ def text_units(c, jids=None, skip=None, batch=60):
         "SELECT wa_id, group_jid, ts, text, file_name FROM source_messages "
         f"WHERE group_jid IN ({','.join('?' * len(chats))}) AND text<>'' ORDER BY group_jid, ts", chats)
         if "u:" + m["wa_id"] not in skip]
+    import noise
+    msgs = noise.filter_messages(c, msgs)  # NOISE_SKIP (off by default): likely noise skips the LLM, logged
     by_chat = {}
     for m in msgs:
         by_chat.setdefault(m["group_jid"], []).append(m)

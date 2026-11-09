@@ -62,6 +62,21 @@ def _eval_job(log):
     run_eval.run_job(log)
 
 
+def _requeue_noise(log):
+    import noise
+    noise.requeue(log)
+
+
+def _retrain_job(log):
+    import retrain
+    retrain.run(log, force=True, reason="manual")
+
+
+def _rule_suggestions_job(log):
+    import rule_suggestions
+    rule_suggestions.run(log)
+
+
 STEPS = [
     ("sync_groups", "1. Sync chats", "Fetch the list of groups and private chats from Evolution.",
      history.sync_groups),
@@ -82,6 +97,13 @@ STEPS = [
     ("eval_report", "Eval: brain report (no LLM)", "Freeze every decision a person made into a gold set and measure "
      "matching, noise, accepted values, auto-approve precision and API cost per source kind. Free: no Claude calls.",
      _eval_job),
+    ("requeue_noise", "Re-read skipped messages", "Put every text message the noise filter skipped back in the "
+     "queue; the next read (6b) sends them to Claude.", _requeue_noise),
+    ("retrain", "Retrain matcher + noise filter (no LLM)", "Train both models on every person decision, re-run the "
+     "eval and promote a model only if it does at least as well. Runs nightly by itself when 25+ new labels exist.",
+     _retrain_job),
+    ("rule_suggestions", "Rule suggestions (no LLM)", "Suggest owner-rule additions from what people rejected. "
+     "Suggestions only: nothing is applied.", _rule_suggestions_job),
     ("classify_images", "7. Review images (Claude)", "Propose what each image shows (shown only after you approve).",
      media_review.classify),
     ("build", "8. Build inventory", "Rebuild projects, phases, units and the review queue.", build.rebuild),
