@@ -179,6 +179,11 @@ CREATE TABLE IF NOT EXISTS extraction_cache(
     content_key TEXT PRIMARY KEY, source_kind TEXT, chat_developer_key TEXT, model TEXT, output_json TEXT,
     created_at INTEGER, hits INTEGER DEFAULT 0);
 
+-- Phase 7: every retrain (promoted or kept) with its metrics
+CREATE TABLE IF NOT EXISTS model_runs(
+    id INTEGER PRIMARY KEY, ts INTEGER, kind TEXT, version TEXT, promoted INTEGER, reason TEXT, trigger TEXT,
+    labels INTEGER, meta_json TEXT);
+
 CREATE TABLE IF NOT EXISTS jobs(
     id INTEGER PRIMARY KEY, name TEXT, status TEXT, started_at INTEGER, finished_at INTEGER, log TEXT);
 """

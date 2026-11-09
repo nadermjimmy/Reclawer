@@ -11,6 +11,7 @@ const DESCRIPTIONS: Record<string, string> = {
   "/more/inventory": "Projects, units and unit history",
   "/more/review": "Issues, mappings, images and facts",
   "/more/sources": "Files, failed downloads and reconciliation",
+  "/more/brain": "Models, eval per source kind, LLM share, cost and flags",
 };
 
 export function MoreScreen() {

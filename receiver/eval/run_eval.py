@@ -167,9 +167,16 @@ def llm_metrics(c, days=7):
         total += cost
         rows.append({"purpose": u["purpose"], "model": u["model"], "batch": bool(u["batch"]), "calls": u["n"],
                      "input_tokens": u["i"], "output_tokens": u["o"], "usd": round(cost, 4)})
-    return {"suggestions": created, "reviewed_by_brain_llm": reviewed,
+    by_matcher = c.execute("SELECT COUNT(*) FROM brain_reviews WHERE model LIKE 'matcher-%'").fetchone()[0]
+    skipped = c.execute("SELECT COUNT(*) FROM noise_skips WHERE requeued_at IS NULL").fetchone()[0]
+    cache_hits = c.execute("SELECT COALESCE(SUM(hits),0) FROM extraction_cache").fetchone()[0]
+    template_uses = c.execute("SELECT COALESCE(SUM(used),0) FROM sheet_templates").fetchone()[0]
+    reviewed -= by_matcher
+    return {"suggestions": created, "reviewed_by_brain_llm": reviewed, "placed_by_matcher": by_matcher,
             "share_reaching_brain_llm": _ratio(reviewed, created),
-            "extraction_share_reaching_llm": 1.0,  # every new message/row/page/image is read by Claude today
+            # every new message/row/page/image goes to Claude except these (all off by default)
+            "extraction_share_reaching_llm": 1.0 if not (skipped or cache_hits or template_uses) else None,
+            "noise_skipped_messages": skipped, "extraction_cache_hits": cache_hits, "template_sheets_read": template_uses,
             "usage_last_days": days, "usage": rows, "usd_last_days": round(total, 4),
             "usd_per_day": round(total / days, 4) if usage else None}
 
@@ -265,7 +272,10 @@ def report_md(r, title="Eval report"):
               f"{a['brain_approved']} auto-approved, {a['reopened_by_person']} reopened by a person: precision at most "
               f"{pct(a['precision_upper_bound'])} (unreviewed approvals count as right).", "",
               "## LLM use and cost", "",
-              f"Extraction: {pct(l['extraction_share_reaching_llm'])} of new sources go to Claude. "
+              (f"Extraction: {pct(l['extraction_share_reaching_llm'])} of new sources go to Claude. "
+               if l["extraction_share_reaching_llm"] is not None else
+               f"Extraction without Claude: {l['noise_skipped_messages']} message(s) skipped as noise, "
+               f"{l['extraction_cache_hits']} cache hit(s), {l['template_sheets_read']} sheet(s) read from a template. ") +
               f"Brain: {pct(l['share_reaching_brain_llm'])} of suggestions ({l['reviewed_by_brain_llm']} of {l['suggestions']}).", "",
               f"Measured API cost, last {l['usage_last_days']} days: ${l['usd_last_days']}"
               + (f" (≈ ${l['usd_per_day']}/day)." if l["usd_per_day"] is not None else

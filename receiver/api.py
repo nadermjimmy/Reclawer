@@ -1431,6 +1431,63 @@ def source_row(row_id: int):
         return source_context(c, kind[0] if kind[0] in ("pdf_page", "image") else "row", str(row_id))
 
 
+# ---------- Phase 7: brain metrics panel (More > Brain) ----------
+FLAG_NAMES = ["MATCHER", "BRAIN_MATCHER", "MATCH_AUTO", "MATCH_NEAR", "MATCH_TIEBREAK_LOW", "BRAIN_AUTO_APPROVE",
+              "BRAIN_AUTO_REJECT", "GUARDS_V2", "FEWSHOT", "FEWSHOT_K", "NOISE_SKIP", "TEMPLATES", "EXTRACTION_CACHE",
+              "RETRAIN_MIN_LABELS", "CLAUDE_TIEBREAK_MODEL", "CLAUDE_BRAIN_MODEL", "CLAUDE_MODEL", "CLAUDE_FILE_MODEL"]
+
+
+def flag_states():
+    import brain, extraction_cache, matcher, memory, noise, proposals as _p, retrain, templates
+    import llm as _llm
+    eff = {"MATCHER": master.MATCHER, "BRAIN_MATCHER": brain.BRAIN_MATCHER, "MATCH_AUTO": matcher.MATCH_AUTO,
+           "MATCH_NEAR": matcher.MATCH_NEAR, "MATCH_TIEBREAK_LOW": matcher.MATCH_TIEBREAK_LOW,
+           "BRAIN_AUTO_APPROVE": brain.AUTO_APPROVE, "BRAIN_AUTO_REJECT": brain.AUTO_REJECT,
+           "GUARDS_V2": brain.GUARDS_V2, "FEWSHOT": _p.FEWSHOT and brain.FEWSHOT, "FEWSHOT_K": memory.FEWSHOT_K,
+           "NOISE_SKIP": noise.SKIP, "TEMPLATES": templates.TEMPLATES, "EXTRACTION_CACHE": extraction_cache.ENABLED,
+           "RETRAIN_MIN_LABELS": retrain.MIN_NEW, "CLAUDE_TIEBREAK_MODEL": brain.TIEBREAK_MODEL,
+           "CLAUDE_BRAIN_MODEL": brain.MODEL, "CLAUDE_MODEL": _llm.MODEL, "CLAUDE_FILE_MODEL": _llm.FILE_MODEL}
+    return [{"name": n, "value": eff[n], "set": os.getenv(n) not in (None, "")} for n in FLAG_NAMES]
+
+
+def _model_info(kind):
+    import models as _m
+    cur = _m.current_version(kind)
+    return {"current": cur, "meta": _m.meta(kind, cur) if cur else None, "versions": _m.versions(kind)[-5:]}
+
+
+@router.get("/brain/metrics")
+def brain_metrics(refresh: bool = False):
+    """Model versions, eval metrics per source kind, share of items reaching an LLM, cost trend, flag states."""
+    import retrain, rule_suggestions
+    from eval import run_eval
+    with db.connect() as c:
+        ev = None
+        if refresh:
+            ev = retrain._summary(run_eval.run())
+            c.execute("INSERT OR REPLACE INTO meta VALUES('last_eval_json', ?)", (json.dumps(ev, default=str),))
+        else:
+            r = c.execute("SELECT value FROM meta WHERE key='last_eval_json'").fetchone()
+            ev = json.loads(r[0]) if r else None
+        since = int(time.time()) - 14 * 86400
+        cost = []
+        for u in c.execute("SELECT date(ts,'unixepoch') day, model, batch, SUM(input_tokens) i, SUM(output_tokens) o, "
+                           "SUM(cache_read) cr, COUNT(*) n FROM llm_usage WHERE ts>=? GROUP BY 1, 2, 3 ORDER BY 1",
+                           (since,)):
+            pin, pout = run_eval.PRICES.get(u["model"], run_eval.PRICES["claude-sonnet-5-5"])
+            usd = ((u["i"] or 0) * pin + (u["cr"] or 0) * pin * 0.1 + (u["o"] or 0) * pout) / 1e6 * (0.5 if u["batch"] else 1)
+            cost.append({"day": u["day"], "model": u["model"], "batch": bool(u["batch"]), "calls": u["n"],
+                         "usd": round(usd, 4)})
+        runs = rows(c.execute("SELECT id, ts, kind, version, promoted, reason, trigger, labels FROM model_runs "
+                              "ORDER BY id DESC LIMIT 20"))
+        shadow = rows(c.execute("SELECT * FROM matcher_shadow ORDER BY id DESC LIMIT 20"))
+        meta = {r["key"]: r["value"] for r in c.execute("SELECT key, value FROM meta WHERE key LIKE 'retrain_%'")}
+        return {"models": {"matcher": _model_info("matcher"), "noise": _model_info("noise")},
+                "eval": ev, "llm": run_eval.llm_metrics(c), "cost_by_day": cost, "runs": runs,
+                "shadow": shadow, "labels": retrain.label_count(c), "retrain": meta,
+                "flags": flag_states(), "rule_suggestions": rule_suggestions.latest()}
+
+
 # ---------- Phase 5: spreadsheet templates ("Confirm columns") ----------
 @router.get("/sources/files/{file_id}/template")
 def file_template(file_id: int, sheet: str):

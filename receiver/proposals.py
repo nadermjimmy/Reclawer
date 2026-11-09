@@ -631,6 +631,11 @@ def start_poller(seconds):
                 poll()
             except Exception:
                 pass
+            try:
+                import retrain
+                retrain.tick()  # nightly / after a re-upload retrain, weekly rule suggestions (no LLM)
+            except Exception:
+                pass
     threading.Thread(target=loop, daemon=True, name="batch-poller").start()
 
 

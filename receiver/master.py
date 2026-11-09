@@ -66,6 +66,7 @@ def import_workbook(data, file_name):
         summary["assignments_missing"] = profiles.relink_projects(c)  # team assignments, re-checked by name
         summary["relinked"] = relink(c)  # human labels and brain reviews point at the new rows again
         c.execute("UPDATE master_imports SET summary_json=? WHERE id=?", (json.dumps(summary), imp))
+        c.execute("INSERT OR REPLACE INTO meta VALUES('retrain_pending','1')")  # retrain.tick picks it up
     return summary
 
 

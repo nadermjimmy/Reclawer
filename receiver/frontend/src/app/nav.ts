@@ -1,4 +1,4 @@
-import { Boxes, ChartColumn, ClipboardCheck, FileSpreadsheet, FolderOpen, Inbox, MessagesSquare, Sheet, Workflow, type LucideIcon } from "lucide-react";
+import { Boxes, Brain, ChartColumn, ClipboardCheck, FileSpreadsheet, FolderOpen, Inbox, MessagesSquare, Sheet, Workflow, type LucideIcon } from "lucide-react";
 import type { ShellCounts } from "../api/session";
 
 export interface NavItem {
@@ -26,4 +26,5 @@ export const MORE_NAV: NavItem[] = [
   { to: "/more/inventory", label: "Inventory", icon: Boxes },
   { to: "/more/review", label: "Review", icon: ClipboardCheck, badge: "open_issues" },
   { to: "/more/sources", label: "Sources", icon: FolderOpen, badge: "failed_downloads" },
+  { to: "/more/brain", label: "Brain", icon: Brain },
 ];

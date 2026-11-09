@@ -247,7 +247,10 @@ def score_many(feats):
     m, _ = model()
     if m is None or not feats:
         return [heuristic(f) for f in feats]
-    return [float(p) for p in m.predict_proba([vector(f) for f in feats])[:, 1]]
+    try:
+        return [float(p) for p in m.predict_proba([vector(f) for f in feats])[:, 1]]
+    except Exception:  # an unreadable or incompatible model never stops matching: fall back to the heuristic
+        return [heuristic(f) for f in feats]
 
 
 def scored(c, q, sheets=None):

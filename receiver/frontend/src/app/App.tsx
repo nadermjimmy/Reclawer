@@ -12,6 +12,7 @@ import { CommandPalette } from "../features/palette";
 import { PipelineScreen } from "../features/pipeline/PipelineScreen";
 import { ReviewScreen } from "../features/review/ReviewScreen";
 import { SourcesScreen } from "../features/sources/SourcesScreen";
+import { BrainScreen } from "../features/brain/BrainScreen";
 import { UpdatesScreen } from "../features/updates/UpdatesScreen";
 import { baseTransition } from "../motion";
 import { JobsProvider } from "./jobs";
@@ -82,6 +83,7 @@ function Gate() {
           <Route path="more/review/:tab" element={<ReviewScreen />} />
           <Route path="more/sources" element={<SourcesScreen />} />
           <Route path="more/sources/:tab" element={<SourcesScreen />} />
+          <Route path="more/brain" element={<BrainScreen />} />
           {LEGACY.map(([path, to]) => (
             <Route key={path} path={path.slice(1)} element={<LegacyRedirect to={to} />} />
           ))}

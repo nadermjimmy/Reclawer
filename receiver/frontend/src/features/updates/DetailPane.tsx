@@ -6,6 +6,7 @@ import { Button, ErrorBanner, Skeleton, StatePill, WarningChip } from "../../com
 import { fmtDateTime, relTime } from "../../lib/format";
 import { Change, displayProject } from "./Change";
 import { needsSheet } from "./QueueList";
+import { ConfirmColumns } from "./ConfirmColumns";
 
 /** Number-ish tokens of the new value, used to highlight where it appears in the quote and source. */
 function tokensOf(p: Proposal) {
@@ -105,6 +106,7 @@ function Source({ d, tokens }: { d: ProposalDetail; tokens: string[] }) {
         <span>{c.kind === "row" ? `${c.sheet}, row ${c.row_number}` : `Page ${c.page}`}</span>
         {c.hidden && <span>Hidden in the workbook</span>}
       </p>
+      {c.kind === "row" && <div className="src-actions"><ConfirmColumns fileId={c.file.id} sheet={c.sheet} /></div>}
       {c.kind === "row" ? (
         <dl className="cells">
           {(c.cells ?? []).map((cell, i) => {

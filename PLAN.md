@@ -1,6 +1,6 @@
 # PLAN: a brain that learns from every human decision (Egypt only)
 
-Status: draft for approval. No code has changed. Scope: MARKET=eg. UAE code paths are left untouched. No embedding APIs or embedding models: text similarity is char n-gram TF-IDF (scikit-learn) only.
+Status: Phases 0–7 implemented (all new behaviour behind flags, off by default; see README "Learning brain"). Scope: MARKET=eg. UAE code paths are left untouched. No embedding APIs or embedding models: text similarity is char n-gram TF-IDF (scikit-learn) only.
 
 ---
 

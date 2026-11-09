@@ -679,3 +679,9 @@ mark {
   padding: 1px 9px; font: inherit; font-size: 12px; cursor: pointer;
 }
 .toast-why-chip:hover, .toast-why-chip:focus-visible { background: rgba(255, 255, 255, 0.14); outline: none; }
+
+/* Phase 5: Confirm Columns */
+.src-actions { margin: 4px 0 8px; }
+.colmap { display: grid; gap: 8px; max-height: 50vh; overflow-y: auto; margin-top: 8px; }
+.colmap-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px; align-items: center; }
+@media (max-width: 639px) { .colmap-row { grid-template-columns: 1fr; gap: 4px; } }

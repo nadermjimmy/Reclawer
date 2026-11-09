@@ -177,3 +177,28 @@ and are re-linked to the new rows on import (`label_row_id`; an old approval is 
 A rejection can carry a reason (Updates asks "Why?"). `BRAIN_AUTO_APPROVE` / `BRAIN_AUTO_REJECT` (default `1`, today's
 behaviour) can turn the brain's auto-decisions off. `receiver/normalize.py`: Arabic/Franco normalization and a
 transliteration key that lets 'ماونتن فيو' and 'Mountain View' meet.
+
+## Learning brain (Phases 2–7)
+
+Everything below is **off by default**: with no new variables set, matching, extraction and the brain behave exactly
+as before. More > **Brain** shows model versions, eval per source kind, what reaches an LLM, cost per day, the flags
+and rule suggestions. Models live under `/data/models/` (versioned, with a `-current` pointer).
+
+| Phase | What | Turn on with |
+|---|---|---|
+| 2 | Unified matcher (`matcher.py`): rapidfuzz + char n-gram TF-IDF on names and transliteration keys, developer-scoped aliases (`dev_aliases`), team assignment, chat history; trained scorer (`train_matcher.py`) | `MATCHER=shadow` (logs disagreements, legacy still decides) → `MATCHER=v2`. `MATCH_AUTO=<p>` treats matches above p as certain (unset = never) |
+| 2 | Brain places suggestions with the matcher; only the rest go to Haiku with the top 3 rows | `BRAIN_MATCHER=v2` (+ `MATCH_AUTO` for LLM-free placement) |
+| 3 | Learning memory (`learned_examples`, every person decision and Reopen); past decisions in the user turn of extraction and brain requests | `FEWSHOT=1` (`FEWSHOT_K`, default 6) |
+| 3 | Weekly rule suggestions from rejections → `/data/review/rule-suggestions-<date>.json` | always on, never applied |
+| 4 | Noise filter for text messages (`noise.py`); skips are logged and re-queueable (Pipeline: Re-read skipped) | `NOISE_SKIP=<p>` only after the eval shows false skips < 1% |
+| 5 | Egyptian notation in `cell_parse` (Arabic digits, مليون/ألف, م², مقدم/سنين, غرف, صافي) | always on (raw text kept verbatim) |
+| 5 | Spreadsheet templates: "Confirm Columns" on a sheet-row source; same layout from the same developer read in code | `TEMPLATES=1` |
+| 5 | Extraction cache for re-reads and forwarded messages (same developer only) | `EXTRACTION_CACHE=1` |
+| 6 | Price guards (`guards.py`, EGP/sq m median/MAD) + matcher probability instead of the model's "high" for auto-approve | `GUARDS_V2=1` (needs `MATCH_AUTO`) |
+| 7 | Retrain loop (`retrain.py`): nightly when 25+ new labels, after a master re-upload, or Pipeline: Retrain; promotes only if no worse | always on; `RETRAIN_MIN_LABELS` |
+
+Never auto-approved, whatever the flags: commission, feedback, location, Hold/Hide, new rows, anything outside a
+group's assigned projects. Models never write to the sheet; every change goes through `master.decide_detail`.
+Suggested order to enable: run Pipeline > Retrain and Eval; `MATCHER=shadow` for a few days; compare legacy vs
+unified on More > Brain; then `MATCHER=v2`, `BRAIN_MATCHER=v2`, `EXTRACTION_CACHE=1`, `FEWSHOT=1`; set `MATCH_AUTO`
+from the trainer's suggestion; `GUARDS_V2=1`; `NOISE_SKIP` last.

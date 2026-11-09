@@ -120,6 +120,13 @@ def _top_per_item(model_fn, prs, items):
     return out
 
 
+def _coverage_at(items, t):
+    """Share of held-out items the matcher would place at threshold t (None when t is unset)."""
+    if not items or t is None:
+        return None
+    return round(sum(p >= t for p, _ in items) / len(items), 4)
+
+
 def train(matching=None, out_meta=None):
     """Train on the gold set; returns (version, meta). Raises ValueError when there are too few labels."""
     from eval import build_gold
@@ -143,6 +150,8 @@ def train(matching=None, out_meta=None):
         pass
     m, kind = _fit(X(set(order)), Y(set(order)))
     heur = _top_per_item(lambda fs: [matcher.heuristic(f) for f in fs], prs, test_items)
+    cur_m, cur_ver = matcher.model()  # what the matcher uses now, on the same held-out items (promotion check)
+    cur = _top_per_item(matcher.score_many, prs, test_items) if cur_m is not None else heur
     pts = curve(held) if held else []
     ver = models.new_version()
     meta = {"trained_at": int(time.time()), "model": kind, "features": matcher.FEATURES,
@@ -150,6 +159,10 @@ def train(matching=None, out_meta=None):
             "gold_row_not_in_candidates": missed, "test_items": len(test_items),
             "test_top1_precision": round(sum(ok for _, ok in held) / len(held), 4) if held else None,
             "heuristic_test_top1_precision": round(sum(ok for _, ok in heur) / len(heur), 4) if heur else None,
+            "current_version": cur_ver,
+            "current_test_top1_precision": round(sum(ok for _, ok in cur) / len(cur), 4) if cur else None,
+            "test_coverage_at_auto": _coverage_at(held, matcher.MATCH_AUTO),
+            "current_coverage_at_auto": _coverage_at(cur, matcher.MATCH_AUTO),
             "curve": pts, "suggested": suggest(held or [], pts)}
     models.save(matcher.KIND, ver, m, meta)
     if out_meta:

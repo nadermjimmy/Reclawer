@@ -81,16 +81,20 @@ def train(data=None):
     if sum(ys) < MIN_PER_CLASS or len(ys) - sum(ys) < MIN_PER_CLASS:
         raise ValueError(f"not enough labels (offers {sum(ys)}, noise {len(ys) - sum(ys)}; need {MIN_PER_CLASS} each)")
     cut = int(len(data) * 0.75)
-    held = None
+    held = current = None
     tr, te = data[:cut], data[cut:]
     if len({d[2] for d in tr}) == 2 and te:
         m = _pipeline().fit([normalize.normalize(d[1]) for d in tr], [d[2] for d in tr])
         held = _rates(list(m.predict_proba([normalize.normalize(d[1]) for d in te])[:, 1]), [d[2] for d in te])
-    model = _pipeline().fit([normalize.normalize(d[1]) for d in data], ys)
+        cur, _ = model()
+        if cur is not None:  # the promoted model on the same held-out messages (promotion check)
+            current = _rates(list(cur.predict_proba([normalize.normalize(d[1]) for d in te])[:, 1]), [d[2] for d in te])
+    fitted = _pipeline().fit([normalize.normalize(d[1]) for d in data], ys)
     ver = models.new_version()
     meta = {"trained_at": int(time.time()), "labels": len(data), "offers": sum(ys), "noise": len(ys) - sum(ys),
-            "held_out": held, "test_items": len(te)}
-    models.save(KIND, ver, model, meta)
+            "held_out": held, "current_held_out": current, "current_version": models.current_version(KIND),
+            "test_items": len(te)}
+    models.save(KIND, ver, fitted, meta)
     return ver, meta
 
 
@@ -104,7 +108,10 @@ def p_offer(texts):
     m, _ = model()
     if m is None or not texts:
         return [1.0] * len(texts)
-    return [float(p) for p in m.predict_proba([normalize.normalize(t) for t in texts])[:, 1]]
+    try:
+        return [float(p) for p in m.predict_proba([normalize.normalize(t) for t in texts])[:, 1]]
+    except Exception:  # an unusable model never skips anything
+        return [1.0] * len(texts)
 
 
 def filter_messages(c, msgs):
