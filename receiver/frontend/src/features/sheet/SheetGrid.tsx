@@ -1,6 +1,6 @@
 import { memo, useEffect, useLayoutEffect, useMemo, useState, type CSSProperties, type KeyboardEvent, type MouseEvent, type RefObject } from "react";
 import type { SheetColumn, SheetRow } from "../../api/sheet";
-import { HEAD_H, ROW_H, STATE_NOTE, cellOf, displayValue, hasDetails, isDateCol, jump, rawValue, type Pos, type Shown } from "./model";
+import { FILL_COL_W, HEAD_H, ROW_H, STATE_NOTE, cellOf, displayValue, hasDetails, isDateCol, jump, letterAt, letterIndex, rawValue, type Pos, type Shown } from "./model";
 
 const OVERSCAN = 14;
 const CHUNK = 6;
@@ -27,7 +27,7 @@ interface GridProps {
  * Developer + Project, a selection cursor and keyboard navigation. Rows are virtualized (fixed row height). */
 export function SheetGrid({ rows, cols, widths, shown, phone, sel, label, resetKey, gridRef, onSelect, onOpen, onFind, onCopy }: GridProps) {
   const rnW = phone ? 40 : 46;
-  const [win, setWin] = useState({ top: 0, h: 800 });
+  const [win, setWin] = useState({ top: 0, h: 800, w: 1200 });
   const R = rows.length;
   const C = cols.length;
 
@@ -47,14 +47,21 @@ export function SheetGrid({ rows, cols, widths, shown, phone, sel, label, resetK
         last = i;
       } else lefts.push(null);
     });
-    return { lefts, starts, last, frozenW: acc, total: x, template: `${rnW}px ${widths.map((w) => `${w}px`).join(" ")}` };
-  }, [cols, widths, phone, rnW]);
+    // empty columns after the data, like Sheets (letters continue from the workbook's last column)
+    const nFill = Math.max(3, Math.ceil((win.w - x) / FILL_COL_W) + 2);
+    const first = cols.length ? letterIndex(cols[cols.length - 1].letter) + 1 : 0;
+    const fill = Array.from({ length: nFill }, (_, i) => letterAt(first + i));
+    const all = [...widths, ...fill.map(() => FILL_COL_W)];
+    return { lefts, starts, last, frozenW: acc, total: x + nFill * FILL_COL_W, fill,
+      template: `${rnW}px ${all.map((w) => `${w}px`).join(" ")}` };
+  }, [cols, widths, phone, rnW, win.w]);
   const dateCols = useMemo(() => cols.map(isDateCol), [cols]);
 
   useLayoutEffect(() => {
     const el = gridRef.current;
     if (!el) return;
-    const ro = new ResizeObserver(() => setWin((w) => (w.h === el.clientHeight ? w : { ...w, h: el.clientHeight })));
+    const ro = new ResizeObserver(() => setWin((w) => (w.h === el.clientHeight && w.w === el.clientWidth ? w
+      : { ...w, h: el.clientHeight, w: el.clientWidth })));
     ro.observe(el);
     return () => ro.disconnect();
   }, [gridRef]);
@@ -151,6 +158,9 @@ export function SheetGrid({ rows, cols, widths, shown, phone, sel, label, resetK
   const end = Math.min(R, win.top + Math.ceil(win.h / ROW_H) + CHUNK + OVERSCAN);
   const visible = rows.slice(start, end);
   const style = { "--sg-cols": layout.template, "--sg-w": `${layout.total}px` } as CSSProperties;
+  // empty rows after the data fill the window, numbered on from the last real row
+  const fillRows = Math.max(20, Math.ceil(win.h / ROW_H) + 4 - R);
+  const lastNo = R ? Math.max(...rows.map((x) => x.row_number ?? 0), R + 1) : 1;
 
   return (
     <div ref={gridRef} className="sg-scroll" tabIndex={0} role="grid" aria-label={label} aria-readonly="true"
@@ -164,6 +174,7 @@ export function SheetGrid({ rows, cols, widths, shown, phone, sel, label, resetK
               <div key={col.field} className={`sg-letter${c === sel.c ? " is-hl" : ""}${c === layout.last ? " is-frozen-edge" : ""}`}
                 style={layout.lefts[c] != null ? { left: layout.lefts[c]!, position: "sticky", zIndex: 2 } : undefined}>{col.letter}</div>
             ))}
+            {layout.fill.map((l) => <div key={l} className="sg-letter">{l}</div>)}
           </div>
           <div className="sg-labels" role="row" aria-rowindex={1}>
             <div className="sg-rn" role="rowheader">1</div>
@@ -174,15 +185,28 @@ export function SheetGrid({ rows, cols, widths, shown, phone, sel, label, resetK
                 <span className="sg-txt" dir="auto">{col.label}</span>
               </div>
             ))}
+            {layout.fill.map((l) => <div key={l} className="sg-label is-fill" aria-hidden="true" />)}
           </div>
         </div>
-        <div className="sg-body" role="rowgroup" style={{ height: R * ROW_H }}
+        <div className="sg-body" role="rowgroup" style={{ height: (R + fillRows) * ROW_H }}
           onMouseDown={(e) => { if (e.button !== 0) return; const p = posOf(e); if (p) onSelect(p); }}
           onDoubleClick={(e) => { const p = posOf(e); if (p) onOpen(p); }}>
           <div className="sg-window" style={{ top: start * ROW_H }}>
             {visible.map((row, i) => (
               <GridRow key={row.row_id ?? `new-${start + i}`} row={row} r={start + i} cols={cols} dateCols={dateCols}
-                lefts={layout.lefts} last={layout.last} shown={shown} selC={sel.r === start + i ? sel.c : -1} />
+                lefts={layout.lefts} last={layout.last} shown={shown} selC={sel.r === start + i ? sel.c : -1} fill={layout.fill.length} />
+            ))}
+          </div>
+          <div className="sg-window sg-fill" style={{ top: R * ROW_H }} aria-hidden="true">
+            {Array.from({ length: fillRows }, (_, i) => (
+              <div key={i} className="sg-row is-fill">
+                <div className="sg-rn">{lastNo + 1 + i}</div>
+                {cols.map((col, c) => (
+                  <div key={col.field} className={`sg-cell${c === layout.last ? " is-frozen-edge" : ""}${layout.lefts[c] != null ? " is-frozen" : ""}`}
+                    style={layout.lefts[c] != null ? { left: layout.lefts[c]! } : undefined} />
+                ))}
+                {layout.fill.map((l) => <div key={l} className="sg-cell" />)}
+              </div>
             ))}
           </div>
         </div>
@@ -191,7 +215,7 @@ export function SheetGrid({ rows, cols, widths, shown, phone, sel, label, resetK
   );
 }
 
-const GridRow = memo(function GridRow({ row, r, cols, dateCols, lefts, last, shown, selC }: {
+const GridRow = memo(function GridRow({ row, r, cols, dateCols, lefts, last, shown, selC, fill }: {
   row: SheetRow;
   r: number;
   cols: SheetColumn[];
@@ -200,6 +224,7 @@ const GridRow = memo(function GridRow({ row, r, cols, dateCols, lefts, last, sho
   last: number;
   shown: Shown;
   selC: number;
+  fill: number;
 }) {
   const note = STATE_NOTE[row.state];
   const rowCls = row.state === "suggested_new" ? " is-newrow" : row.state === "moved" || row.state === "legacy_duplicate" ? " is-muted" : "";
@@ -234,6 +259,7 @@ const GridRow = memo(function GridRow({ row, r, cols, dateCols, lefts, last, sho
           </div>
         );
       })}
+      {Array.from({ length: fill }, (_, i) => <div key={`f${i}`} className="sg-cell is-fill" />)}
     </div>
   );
 });

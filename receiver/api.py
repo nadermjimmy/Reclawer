@@ -6,7 +6,7 @@ Unauthenticated /api/* calls get 401 {"error": "login"} from web.auth_middleware
 import datetime, json, os, re, time
 from fastapi import APIRouter, File, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
-import brain, build, cell_parse as cp, profiles, chat_sync, db, feed, history, jobs, master, master_export, master_schema as ms, parse_files, proposals, \
+import brain, cell_parse as cp, profiles, chat_sync, db, feed, history, jobs, master, master_export, master_schema as ms, parse_files, proposals, \
     rules, search, web
 
 router = APIRouter(prefix="/api")
@@ -75,8 +75,6 @@ def me():
         counts = {
             "open_suggestions": c.execute("SELECT COUNT(*) FROM proposals WHERE state='proposed'").fetchone()[0],
             "rows_to_place": c.execute("SELECT COUNT(*) FROM master_issues WHERE state='open'").fetchone()[0],
-            "open_issues": c.execute("SELECT COUNT(*) FROM review_issues WHERE severity IN ('high','medium')"
-                                     ).fetchone()[0],
             "failed_downloads": c.execute("SELECT COUNT(*) FROM media_fetch WHERE status='failed'").fetchone()[0],
             "chats_with_suggestions": len(open_jids),
         }
@@ -235,10 +233,15 @@ def sheet_view(sheet: str = "", view: str = "all", q: str = "", offset: int = 0,
                     "brain_reason": p["brain_reason"], "brain_verdict": p["brain_verdict"],
                     "warning": p["warning"] or "", "count": count, "row_new": p["row_id"] is None}
 
+        feeds = {}  # project -> groups the team assigned to it (same developer)
+        for f in c.execute("SELECT cp.project_key, cp.developer_key, g.name FROM chat_projects cp "
+                           "LEFT JOIN groups g ON g.jid=cp.jid WHERE cp.status='ok'"):
+            feeds.setdefault(f["project_key"], []).append((f["developer_key"], f["name"] or ""))
         out_rows = []
         for r in all_rows:
             row = {"row_id": r["id"], "row_number": r["row_number"], "state": r["state"], "cells": {}, "changes": 0,
-                   "pending": 0}
+                   "pending": 0, "groups": [n for dk, n in feeds.get(r["project_key"], [])
+                                            if not dk or master.same_developer(dk, r)]}
             for f, _ in cols:
                 master_raw = r[f] if f in ("developer", "project") else cells.get((r["id"], f), "")
                 cell = {"master": master_raw or ""}
@@ -306,8 +309,72 @@ async def save_chat_profile(jid: str, request: Request):
     with db.connect() as c:
         if not c.execute("SELECT 1 FROM groups WHERE jid=?", (jid,)).fetchone():
             return err("unknown_chat", 404)
-        return {"profile": profiles.put(c, jid, d.get("developer", ""), d.get("shares", ""), d.get("on_request") or [],
+        return {"profile": profiles.put(c, jid, d.get("developer"), d.get("shares", ""), d.get("on_request") or [],
                                          d.get("notes", ""))}
+
+
+# ---------- team assignment: chat -> developer + projects (Phase 0) ----------
+@router.get("/chats/{jid}/assignment")
+def chat_assignment(jid: str, developer: str = ""):
+    """Developer dropdown options (the master's developers) and the chosen developer's projects."""
+    with db.connect() as c:
+        prof = profiles.get(c, jid)
+        dev = developer or (prof["developer"] if prof else "")
+        return {"profile": prof, "developers": profiles.master_developers(c),
+                "projects": profiles.developer_projects(c, dev) if dev else [],
+                "assigned": profiles.assigned_projects(c, jid),
+                "suggested": prof["developer"] if prof and prof["source"] == "auto" else ""}
+
+
+@router.put("/chats/{jid}/assignment")
+async def save_chat_assignment(jid: str, request: Request):
+    """{developer, project_keys?: [..], new_developer?: bool}."""
+    d = await body_of(request)
+    with db.connect() as c:
+        if not c.execute("SELECT 1 FROM groups WHERE jid=?", (jid,)).fetchone():
+            return err("unknown_chat", 404)
+        try:
+            prof = profiles.assign(c, jid, d.get("developer", ""), d.get("project_keys"),
+                                   allow_new=bool(d.get("new_developer")))
+        except ValueError as e:
+            return err("bad_assignment", 422, str(e))
+        return {"profile": prof, "assigned": profiles.assigned_projects(c, jid)}
+
+
+@router.post("/chats/assign")
+async def bulk_assign(request: Request):
+    """{jids: [..], developer}: assign one developer to many groups (projects are set per chat)."""
+    d = await body_of(request)
+    jids = [j for j in d.get("jids") or [] if isinstance(j, str)]
+    if not jids:
+        return err("bad_request", 422, "Send jids")
+    done = []
+    with db.connect() as c:
+        for j in jids:
+            if not c.execute("SELECT 1 FROM groups WHERE jid=?", (j,)).fetchone():
+                continue
+            try:
+                profiles.assign(c, j, d.get("developer", ""))
+            except ValueError as e:
+                return err("bad_assignment", 422, str(e))
+            done.append(j)
+    return {"assigned": done}
+
+
+@router.post("/proposals/reason")
+async def reject_reason(request: Request):
+    """{ids, reason}: why a person rejected these (wrong_project / wrong_value / not_an_offer / duplicate).
+    Only for rejections a person made; it's the label the learning layer trains on."""
+    d = await body_of(request)
+    ids = [int(i) for i in d.get("ids") or [] if str(i).isdigit()]
+    if d.get("reason") not in master.REJECT_REASONS or not ids:
+        return err("bad_request", 422, "Send ids and a reason: " + ", ".join(master.REJECT_REASONS))
+    with db.connect() as c:
+        n = c.execute(f"UPDATE proposals SET reject_reason=? WHERE id IN ({','.join('?' * len(ids))}) "
+                      "AND state='rejected' AND decided_by IS NULL", [d["reason"], *ids]).rowcount
+        c.execute(f"UPDATE learned_examples SET reason=? WHERE decision='rejected' AND proposal_id IN "
+                  f"({','.join('?' * len(ids))})", [d["reason"], *ids])
+    return {"updated": n}
 
 
 @router.post("/proposals/{pid}/reopen")
@@ -333,7 +400,8 @@ async def decide(request: Request):
         return err("bad_sheet", 422, f"Unknown sheet: {bad[0]}")
     default = data.get("sheet") or ""
     chosen = {i: sheets.get(i, default) for i in ids} if (sheets or default) else ""
-    done, skipped = master.decide_detail(ids, action, chosen)
+    reason = data.get("reason") if data.get("reason") in master.REJECT_REASONS else None
+    done, skipped = master.decide_detail(ids, action, chosen, reason=reason)
     with db.connect() as c:
         return {"done": done, "skipped": skipped, "counts": state_counts(c)}
 
@@ -484,8 +552,7 @@ def master_export_file(which: str):
 
 
 # ---------- jobs / pipeline ----------
-REDO = {"map_projects": "Re-ask unreviewed", "parse_files": "Re-read all", "download_media": "Retry failed",
-        "brain_review": "Re-check what it left open"}
+REDO = {"brain_review": "Re-check what it left open"}
 
 
 def chat_routine(log, mode="batch"):
@@ -622,8 +689,7 @@ def pipeline():
             "in_scope": len(db.scoped_groups(c)),
             "messages": c.execute("SELECT COUNT(*) FROM source_messages").fetchone()[0],
             "files": c.execute("SELECT COUNT(*) FROM source_files").fetchone()[0],
-            "projects": c.execute("SELECT COUNT(*) FROM projects").fetchone()[0],
-            "units": c.execute("SELECT COUNT(*) FROM units").fetchone()[0],
+            "suggestions": c.execute("SELECT COUNT(*) FROM proposals WHERE state='proposed'").fetchone()[0],
         }
         return {"counts": counts, "job": running_job(c)}
 
@@ -723,9 +789,17 @@ def list_chats(filter: str = "all", q: str = "", scope: str = "", has_suggestion
             item["preview"], item["media_preview"], item["preview_sender"] = _preview(c, item["jid"]) if item["count"] \
                 else ("", False, None)
         profs = profiles.for_chats(c, [i["jid"] for i in out])
+        nproj = {r[0]: r[1] for r in c.execute("SELECT jid, COUNT(*) FROM chat_projects WHERE status='ok' GROUP BY jid")}
         for item in out:
-            item["developer"] = profs[item["jid"]]["developer"] if item["jid"] in profs else ""
-        counts = {"all": len(jids), "inventory": len(scoped & jids), "suggestions": len(set(opened) & jids)}
+            pr = profs.get(item["jid"])
+            item["developer"] = pr["developer"] if pr else ""
+            item["assigned"] = bool(pr and pr["source"] == "team" and pr["developer"])  # set by the team, not guessed
+            item["assigned_projects"] = nproj.get(item["jid"], 0)
+        unassigned = [i for i in out if i["kind"] == "group" and not i["assigned"]]
+        if filter == "unassigned":
+            out = unassigned
+        counts = {"all": len(jids), "inventory": len(scoped & jids), "suggestions": len(set(opened) & jids),
+                  "unassigned": len(unassigned)}
     return {"chats": out, "counts": counts}
 
 
@@ -1165,163 +1239,7 @@ def insights(days: int = 7, sections: str = ""):
                         "open_suggestions": open_n}}
 
 
-# ---------- legacy pages (More), straight ports of web.py ----------
-@router.get("/projects")
-def projects(q: str = ""):
-    with db.connect() as c:
-        return rows(c.execute(
-            "SELECT p.slug, p.name, d.name developer, "
-            "(SELECT COUNT(*) FROM project_phases f WHERE f.project_id=p.id) phases, "
-            "(SELECT COUNT(*) FROM units u WHERE u.project_id=p.id) units "
-            "FROM projects p LEFT JOIN developers d ON d.id=p.developer_id WHERE p.name LIKE ? ORDER BY p.name",
-            (f"%{q}%",)))
-
-
-@router.get("/projects/{slug}")
-def project(slug: str):
-    with db.connect() as c:
-        p = c.execute("SELECT p.*, d.name developer FROM projects p LEFT JOIN developers d ON d.id=p.developer_id "
-                      "WHERE slug=?", (slug,)).fetchone()
-        if not p:
-            return err("not_found", 404)
-        fs = rows(c.execute("SELECT a.* FROM fact_assertions a JOIN fact_links l ON l.fact_id=a.id "
-                            "WHERE l.project_id=? ORDER BY a.observed_ts", (p["id"],)))
-        by_type = {}
-        for f in fs:
-            by_type.setdefault(f["fact_type"], []).append(f)
-        key_facts = [dict(web.fact_summary(by_type.get(t, [])), type=t) for t in build.REQUIRED_FACTS]
-        return {
-            "project": dict(p), "key_facts": key_facts, "phase_facts": by_type.get("phase_status", []),
-            "other_facts": [f for t in ("launch", "unit_status", "other") for f in by_type.get(t, [])],
-            "phases": rows(c.execute("SELECT * FROM project_phases WHERE project_id=? ORDER BY raw_label", (p["id"],))),
-            "units": [dict(u) for u in web.latest_snapshots(c, "u.project_id=?", (p["id"],))],
-            "images": rows(c.execute(
-                "SELECT m.*, f.id fid, f.file_name FROM media_assignments m JOIN source_files f ON f.id=m.file_id "
-                "WHERE m.review_state='approved' AND m.project_name IN "
-                "(SELECT raw_label FROM project_aliases WHERE project_id=? UNION SELECT ?)", (p["id"], p["name"]))),
-        }
-
-
-@router.get("/units")
-def units(q: str = "", status: str = "", max_price: str = ""):
-    where, args = ["1=1"], []
-    if q:
-        where.append("(u.unit_code LIKE ? OR p.name LIKE ? OR u.phase_key LIKE ? OR s.unit_type_raw LIKE ?)")
-        args += [f"%{q}%"] * 4
-    if status:
-        where.append("s.unit_status=?")
-        args.append(status)
-    with db.connect() as c:
-        res = [dict(r) for r in web.latest_snapshots(c, " AND ".join(where), args)]
-    if max_price.replace(",", "").isdigit():
-        mp = float(max_price.replace(",", ""))
-        res = [r for r in res if r["price_value"] is not None and r["price_value"] <= mp]
-    return {"units": res[:2000], "total": len(res)}
-
-
-@router.get("/units/{unit_id}")
-def unit_history(unit_id: int):
-    with db.connect() as c:
-        u = c.execute("SELECT u.*, p.name project, p.slug FROM units u JOIN projects p ON p.id=u.project_id "
-                      "WHERE u.id=?", (unit_id,)).fetchone()
-        if not u:
-            return err("not_found", 404)
-        snaps = rows(c.execute("SELECT s.*, r.file_id, r.sheet, r.row_number, f.file_name FROM unit_snapshots s "
-                               "JOIN source_rows r ON r.id=s.source_row_id JOIN source_files f ON f.id=r.file_id "
-                               "WHERE s.unit_id=? ORDER BY COALESCE(s.snapshot_ts,0) DESC", (unit_id,)))
-    return {"unit": dict(u), "snapshots": snaps}
-
-
-FACT_STATES = ("verified_from_source", "needs_validation", "source_stated_unverified", "rejected")
-
-
-@router.post("/facts/{fact_id}")
-async def set_fact(fact_id: int, request: Request):
-    status = (await body_of(request)).get("status")
-    if status not in FACT_STATES:
-        return err("bad_request", 422, f"status must be one of {', '.join(FACT_STATES)}")
-    with db.connect() as c:
-        c.execute("UPDATE fact_assertions SET validation_status=? WHERE id=?", (status, fact_id))
-    return {"id": fact_id, "status": status}
-
-
-SEVERITY = "CASE severity WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END"
-
-
-@router.get("/review/issues")
-def review_issues(kind: str = ""):
-    with db.connect() as c:
-        sql, args = "SELECT * FROM review_issues", ()
-        if kind:
-            sql, args = sql + " WHERE issue_type=?", (kind,)
-        return {
-            "kinds": rows(c.execute(f"SELECT issue_type, severity, COUNT(*) n FROM review_issues "
-                                    f"GROUP BY issue_type, severity ORDER BY {SEVERITY}")),
-            "issues": rows(c.execute(f"{sql} ORDER BY {SEVERITY}, id LIMIT 500", args)),
-            "pending_mappings": c.execute("SELECT COUNT(*) FROM label_mappings WHERE review_state='proposed'"
-                                          ).fetchone()[0],
-            "pending_images": c.execute("SELECT COUNT(*) FROM media_assignments WHERE review_state IN "
-                                        "('proposed','withheld')").fetchone()[0],
-        }
-
-
-@router.get("/review/mappings")
-def review_mappings(state: str = "proposed"):
-    with db.connect() as c:
-        sql = ("SELECT x.key, x.file_id, x.sheet, x.section_label, x.raw_project, x.raw_phase, x.row_count, "
-               "m.decision, m.developer, m.project_name, m.phase_label, m.confidence, m.rationale, m.source, "
-               "m.review_state, f.file_name FROM label_contexts x LEFT JOIN label_mappings m ON m.context_key=x.key "
-               "LEFT JOIN source_files f ON f.id=x.file_id ")
-        if state == "all":
-            res = rows(c.execute(sql + "ORDER BY f.file_name, x.sheet"))
-        elif state == "unmapped":
-            res = rows(c.execute(sql + "WHERE m.context_key IS NULL ORDER BY f.file_name, x.sheet"))
-        else:
-            res = rows(c.execute(sql + "WHERE m.review_state=? ORDER BY f.file_name, x.sheet", (state,)))
-        known = [r[0] for r in c.execute("SELECT DISTINCT project_name FROM label_mappings "
-                                         "WHERE decision='project' AND project_name<>'' ORDER BY 1")]
-    for x in res:
-        x["warning"] = rules.why_not_a_project(x["project_name"]) if x["decision"] == "project" and x["project_name"] \
-            else None
-    return {"mappings": res, "known_projects": known}
-
-
-@router.post("/review/mappings")
-async def save_mapping(request: Request):
-    """{key, action: approve|reject|exclude, project_name?, phase_label?, developer?} (same rules as web.py)."""
-    d = await body_of(request)
-    if not d.get("key") or d.get("action") not in ("approve", "reject", "exclude"):
-        return err("bad_request", 422)
-    web.save_mapping(key=d["key"], action=d["action"], project_name=d.get("project_name", ""),
-                     phase_label=d.get("phase_label", ""), developer=d.get("developer", ""))
-    return {"ok": True}
-
-
-@router.get("/review/images")
-def review_images(state: str = "proposed"):
-    with db.connect() as c:
-        return rows(c.execute("SELECT m.*, f.file_name FROM media_assignments m JOIN source_files f ON f.id=m.file_id "
-                              "WHERE m.review_state=? ORDER BY m.updated_at DESC LIMIT 200", (state,)))
-
-
-@router.post("/review/images")
-async def save_image(request: Request):
-    d = await body_of(request)
-    if d.get("action") not in ("approve", "withhold", "exclude") or not str(d.get("file_id", "")).isdigit():
-        return err("bad_request", 422)
-    web.save_image(file_id=int(d["file_id"]), action=d["action"], project_name=d.get("project_name", ""), back="/")
-    return {"ok": True}
-
-
-@router.get("/review/facts")
-def review_facts(status: str = ""):
-    with db.connect() as c:
-        sql, args = "SELECT * FROM fact_assertions", ()
-        if status:
-            sql, args = sql + " WHERE validation_status=?", (status,)
-        return rows(c.execute(sql + " ORDER BY observed_ts DESC LIMIT 500", args))
-
-
+# ---------- sources (More > Sources) ----------
 @router.get("/sources")
 def sources():
     with db.connect() as c:
@@ -1353,20 +1271,92 @@ def source_row(row_id: int):
         return source_context(c, kind[0] if kind[0] in ("pdf_page", "image") else "row", str(row_id))
 
 
-@router.get("/reconciliation")
-def reconciliation():
+# ---------- Phase 7: brain metrics panel (More > Brain) ----------
+FLAG_NAMES = ["MATCHER", "BRAIN_MATCHER", "MATCH_AUTO", "MATCH_NEAR", "MATCH_TIEBREAK_LOW", "BRAIN_AUTO_APPROVE",
+              "BRAIN_AUTO_REJECT", "GUARDS_V2", "FEWSHOT", "FEWSHOT_K", "NOISE_SKIP", "TEMPLATES", "EXTRACTION_CACHE",
+              "RETRAIN_MIN_LABELS", "CLAUDE_TIEBREAK_MODEL", "CLAUDE_BRAIN_MODEL", "CLAUDE_MODEL", "CLAUDE_FILE_MODEL"]
+
+
+def flag_states():
+    import brain, extraction_cache, matcher, memory, noise, proposals as _p, retrain, templates
+    import llm as _llm
+    eff = {"MATCHER": master.MATCHER, "BRAIN_MATCHER": brain.BRAIN_MATCHER, "MATCH_AUTO": matcher.MATCH_AUTO,
+           "MATCH_NEAR": matcher.MATCH_NEAR, "MATCH_TIEBREAK_LOW": matcher.MATCH_TIEBREAK_LOW,
+           "BRAIN_AUTO_APPROVE": brain.AUTO_APPROVE, "BRAIN_AUTO_REJECT": brain.AUTO_REJECT,
+           "GUARDS_V2": brain.GUARDS_V2, "FEWSHOT": _p.FEWSHOT and brain.FEWSHOT, "FEWSHOT_K": memory.FEWSHOT_K,
+           "NOISE_SKIP": noise.SKIP, "TEMPLATES": templates.TEMPLATES, "EXTRACTION_CACHE": extraction_cache.ENABLED,
+           "RETRAIN_MIN_LABELS": retrain.MIN_NEW, "CLAUDE_TIEBREAK_MODEL": brain.TIEBREAK_MODEL,
+           "CLAUDE_BRAIN_MODEL": brain.MODEL, "CLAUDE_MODEL": _llm.MODEL, "CLAUDE_FILE_MODEL": _llm.FILE_MODEL}
+    return [{"name": n, "value": eff[n], "set": os.getenv(n) not in (None, "")} for n in FLAG_NAMES]
+
+
+def _model_info(kind):
+    import models as _m
+    cur = _m.current_version(kind)
+    return {"current": cur, "meta": _m.meta(kind, cur) if cur else None, "versions": _m.versions(kind)[-5:]}
+
+
+@router.get("/brain/metrics")
+def brain_metrics(refresh: bool = False):
+    """Model versions, eval metrics per source kind, share of items reaching an LLM, cost trend, flag states."""
+    import retrain, rule_suggestions
+    from eval import run_eval
     with db.connect() as c:
-        return {"report": build.reconcile(c), "per_file": rows(c.execute(
-            "SELECT f.file_name, r.file_id, s.mapping_state, COUNT(*) n FROM unit_snapshots s "
-            "JOIN source_rows r ON r.id=s.source_row_id JOIN source_files f ON f.id=r.file_id "
-            "GROUP BY r.file_id, s.mapping_state ORDER BY f.file_name"))}
+        ev = None
+        if refresh:
+            ev = retrain._summary(run_eval.run())
+            c.execute("INSERT OR REPLACE INTO meta VALUES('last_eval_json', ?)", (json.dumps(ev, default=str),))
+        else:
+            r = c.execute("SELECT value FROM meta WHERE key='last_eval_json'").fetchone()
+            ev = json.loads(r[0]) if r else None
+        since = int(time.time()) - 14 * 86400
+        cost = []
+        for u in c.execute("SELECT date(ts,'unixepoch') day, model, batch, SUM(input_tokens) i, SUM(output_tokens) o, "
+                           "SUM(cache_read) cr, COUNT(*) n FROM llm_usage WHERE ts>=? GROUP BY 1, 2, 3 ORDER BY 1",
+                           (since,)):
+            pin, pout = run_eval.PRICES.get(u["model"], run_eval.PRICES["claude-sonnet-5-5"])
+            usd = ((u["i"] or 0) * pin + (u["cr"] or 0) * pin * 0.1 + (u["o"] or 0) * pout) / 1e6 * (0.5 if u["batch"] else 1)
+            cost.append({"day": u["day"], "model": u["model"], "batch": bool(u["batch"]), "calls": u["n"],
+                         "usd": round(usd, 4)})
+        runs = rows(c.execute("SELECT id, ts, kind, version, promoted, reason, trigger, labels FROM model_runs "
+                              "ORDER BY id DESC LIMIT 20"))
+        shadow = rows(c.execute("SELECT * FROM matcher_shadow ORDER BY id DESC LIMIT 20"))
+        meta = {r["key"]: r["value"] for r in c.execute("SELECT key, value FROM meta WHERE key LIKE 'retrain_%'")}
+        return {"models": {"matcher": _model_info("matcher"), "noise": _model_info("noise")},
+                "eval": ev, "llm": run_eval.llm_metrics(c), "cost_by_day": cost, "runs": runs,
+                "shadow": shadow, "labels": retrain.label_count(c), "retrain": meta,
+                "flags": flag_states(), "rule_suggestions": rule_suggestions.latest()}
+
+
+# ---------- Phase 5: spreadsheet templates ("Confirm columns") ----------
+@router.get("/sources/files/{file_id}/template")
+def file_template(file_id: int, sheet: str):
+    """The sheet's header and column mapping (confirmed, or a suggestion from the master's header names)."""
+    import proposals as _p, templates
+    with db.connect() as c:
+        dev = _p._chat_context(c, file_id).get("developer", "")
+        return dict(templates.describe(c, file_id, sheet, dev), enabled=templates.TEMPLATES)
+
+
+@router.put("/sources/files/{file_id}/template")
+async def confirm_template(file_id: int, request: Request):
+    """{sheet, mapping: {column index: role}}: a person confirms which column holds which master field. Sheets with
+    the same layout from the same developer are then read in code (TEMPLATES=1)."""
+    import proposals as _p, templates
+    d = await body_of(request)
+    with db.connect() as c:
+        dev = _p._chat_context(c, file_id).get("developer", "")
+        try:
+            templates.confirm(c, file_id, d.get("sheet", ""), d.get("mapping") or {}, dev)
+        except ValueError as e:
+            return err("bad_template", 422, str(e))
+        return templates.describe(c, file_id, d.get("sheet", ""), dev)
 
 
 # ---------- the built SPA at /app ----------
 DIST = os.path.join(os.path.dirname(os.path.abspath(__file__)), "frontend", "dist")
 NOT_BUILT = ("<!doctype html><title>Receiver</title><p>The new app hasn't been built on this server. "
-             "Run <code>npm ci && npm run build</code> in <code>receiver/frontend</code>, or use the "
-             "<a href='/'>classic pages</a>.</p>")
+             "Run <code>npm ci && npm run build</code> in <code>receiver/frontend</code>.</p>")
 
 
 @spa_router.get("/app", include_in_schema=False)

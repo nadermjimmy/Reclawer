@@ -18,6 +18,14 @@ function useBadge(item: NavItem) {
   return item.badge === "open_suggestions" ? Math.max(0, n - pendingDecisions) : n;
 }
 
+/** Phone: the More tab sums the badges of everything listed under it (rail-only items and MORE_NAV). */
+function useMoreBadge() {
+  const { me } = useSession();
+  if (!me) return 0;
+  return [...PRIMARY_NAV.filter((i) => i.railOnly), ...MORE_NAV]
+    .reduce((n, i) => n + (i.badge ? me.counts[i.badge] ?? 0 : 0), 0);
+}
+
 function Badge({ n, max = 99 }: { n: number; max?: number }) {
   return (
     <AnimatePresence initial={false} mode="popLayout">
@@ -62,7 +70,7 @@ export function Shell() {
   const title = usePageTitleValue();
   const location = useLocation();
   const moreActive = location.pathname.startsWith("/more");
-  const moreBadge = useBadge(MORE_NAV[2]) + useBadge(MORE_NAV[3]);
+  const moreBadge = useMoreBadge();
   return (
     <div className="shell">
       <nav className="rail" aria-label="Main">

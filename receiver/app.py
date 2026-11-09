@@ -28,6 +28,10 @@ def extract_text(msg: dict) -> str:
             or "")
 
 store.init()
+import master as _master
+with store.connect() as _c:  # one-off and idempotent: labels get a stable row identity (Phase 1)
+    _master.stamp_row_keys(_c)
+    _master.relink(_c)
 if int(os.getenv("INGEST_POLL_SECONDS", "60")) > 0:  # collects batched reads (step 6b) as they finish
     import proposals
     proposals.start_poller(int(os.getenv("INGEST_POLL_SECONDS", "60")))

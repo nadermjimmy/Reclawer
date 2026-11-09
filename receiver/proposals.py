@@ -15,7 +15,7 @@ Two ways to run the same stages:
   what the earlier stage found. No job lock is held while a batch waits.
 """
 import base64, io, json, os, re, threading, time
-import cell_parse as cp, db, jobs, llm, master, master_schema as ms, profiles, rows
+import cell_parse as cp, db, extraction_cache as xc, jobs, llm, master, master_schema as ms, profiles, rows, templates
 
 FIELD_HELP = "\n".join([
     "- location: one-letter location code (see codes below)",
@@ -70,6 +70,36 @@ IMAGE_MAX = 5 * 1024 * 1024        # API limit per image
 PDF_PAGES_PER_REQUEST = 20
 PDF_MAX = 24 * 1024 * 1024         # keep each request well under the 32 MB request limit
 BATCH_MAX = 200 * 1024 * 1024      # keep each batch under the 256 MB batch limit
+FEWSHOT = os.getenv("FEWSHOT", "0") == "1"  # Phase 3: past person decisions in the user turn (default off)
+
+
+def _examples(c, kind, texts, developer, jid):
+    """Past decisions for one request (top-k over the whole chunk), or None. Never changes the system prompt."""
+    if not FEWSHOT:
+        return None
+    import memory
+    ex = memory.retrieve_multi(c, kind, texts, developer, jid=jid)
+    return memory.as_prompt(ex) if ex else None
+
+
+def _cached(c, u, developer):
+    """EXTRACTION_CACHE=1: a request whose content was answered before reuses that answer (no LLM call)."""
+    if not xc.ENABLED or u["content"] is None:
+        return u
+    key = xc.unit_key(u["model"], SYSTEM, u["content"])
+    hit = xc.get(c, key)
+    if hit is not None:
+        u["local_updates"] = hit
+        u["label"] += " (cached)"
+    else:
+        u["cache"] = {"unit": key, "developer": developer, "model": u["model"]}
+    return u
+
+
+def _with_examples(content, ex):
+    if ex:
+        content.append({"type": "text", "text": "past_decisions: " + json.dumps(ex, ensure_ascii=False)})
+    return content
 
 
 # ---------- work units ----------
@@ -120,7 +150,7 @@ def _chat_context(c, file_id, around=4):
                      (m["group_jid"], m["ts"], around, m["group_jid"], m["ts"], around)).fetchall()
     return {"caption": (m["text"] or "")[:500], "nearby": [(n[0] or "")[:300] for n in near],
             "chat": g[0] if g else m["group_jid"], "chat_profile": profiles.describe(prof),
-            "developer": prof["developer"] if prof else ""}
+            "developer": prof["developer"] if prof else "", "jid": m["group_jid"]}
 
 
 def text_units(c, jids=None, skip=None, batch=60):
@@ -133,6 +163,8 @@ def text_units(c, jids=None, skip=None, batch=60):
         "SELECT wa_id, group_jid, ts, text, file_name FROM source_messages "
         f"WHERE group_jid IN ({','.join('?' * len(chats))}) AND text<>'' ORDER BY group_jid, ts", chats)
         if "u:" + m["wa_id"] not in skip]
+    import noise
+    msgs = noise.filter_messages(c, msgs)  # NOISE_SKIP (off by default): likely noise skips the LLM, logged
     by_chat = {}
     for m in msgs:
         by_chat.setdefault(m["group_jid"], []).append(m)
@@ -141,16 +173,35 @@ def text_units(c, jids=None, skip=None, batch=60):
     for jid, items in by_chat.items():
         prof = profiles.get(c, jid)
         dev = prof["developer"] if prof else ""
+        mkeys = {}
+        if xc.ENABLED:  # forwarded / repeated messages: reuse the earlier extraction (same developer only)
+            mkeys = {m["wa_id"]: xc.message_key(llm.MODEL, SYSTEM, m["text"], dev, jid) for m in items}
+            hits = [(m, xc.get(c, mkeys[m["wa_id"]])) for m in items]
+            done = [(m, h) for m, h in hits if h is not None]
+            if done:
+                u = _unit(f"c{done[0][0]['wa_id']}"[:60], "text", f"{names.get(jid, jid)}: {len(done)} message(s) (cached)",
+                          llm.MODEL, None, {m["wa_id"]: ["message", m["wa_id"], m["ts"], dev, jid] for m, _ in done},
+                          ["u:" + m["wa_id"] for m, _ in done])
+                u["local_updates"] = [x for m, h in done for x in xc.with_source(h, m["wa_id"])]
+                out.append(u)
+            items = [m for m, h in hits if h is None]
         for i in range(0, len(items), batch):
             chunk = items[i:i + batch]
             body = {"chat": names.get(jid, jid), "chat_profile": profiles.describe(prof),
                     "messages": [{"source_id": m["wa_id"], "time": m["ts"], "text": m["text"],
                                   "attached_file": m["file_name"]} for m in chunk]}
-            out.append(_unit(f"t{chunk[0]['wa_id']}"[:60], "text",
-                             f"{names.get(jid, jid)}: messages {i + 1}-{i + len(chunk)}", llm.MODEL,
-                             json.dumps(body, ensure_ascii=False),
-                             {m["wa_id"]: ["message", m["wa_id"], m["ts"], dev] for m in chunk},
-                             ["u:" + m["wa_id"] for m in chunk]))
+            ex = _examples(c, "message", [m["text"] for m in chunk], dev, jid)
+            if ex:
+                body["past_decisions"] = ex
+            u = _unit(f"t{chunk[0]['wa_id']}"[:60], "text",
+                      f"{names.get(jid, jid)}: messages {i + 1}-{i + len(chunk)}", llm.MODEL,
+                      json.dumps(body, ensure_ascii=False),
+                      {m["wa_id"]: ["message", m["wa_id"], m["ts"], dev, jid] for m in chunk},
+                      ["u:" + m["wa_id"] for m in chunk])
+            if mkeys:
+                u["cache"] = {"developer": dev, "model": llm.MODEL,
+                              "messages": {m["wa_id"]: mkeys[m["wa_id"]] for m in chunk if mkeys.get(m["wa_id"])}}
+            out.append(u)
     return out
 
 
@@ -158,7 +209,7 @@ def sheet_units(c, jids=None, skip=None, chunk_rows=150):
     files = _file_ids(c, jids)
     skip = _skip_keys(c) if skip is None else skip
     todo = [r for r in c.execute(
-        "SELECT r.id, r.file_id, r.sheet, r.raw_json, f.file_name FROM source_rows r JOIN source_files f "
+        "SELECT r.id, r.file_id, r.sheet, r.row_number, r.raw_json, f.file_name FROM source_rows r JOIN source_files f "
         "ON f.id=r.file_id WHERE r.kind='sheet_row' ORDER BY r.file_id, r.sheet, r.row_number")
         if r["file_id"] in files and "ur:%d" % r["id"] not in skip]
     groups = {}
@@ -167,6 +218,14 @@ def sheet_units(c, jids=None, skip=None, chunk_rows=150):
     out = []
     for (file_id, sheet), items in groups.items():
         ts, ctx = _file_ts(c, file_id), _chat_context(c, file_id)
+        local = templates.local_updates(c, file_id, sheet, items, ctx.get("developer", ""))
+        if local is not None:  # TEMPLATES=1 and a person confirmed this layout: read in code, no LLM call
+            u = _unit(f"s{items[0]['id']}", "sheets", f"{items[0]['file_name']} / {sheet} (template)", llm.MODEL, None,
+                      {str(r["id"]): ["row", str(r["id"]), ts, ctx.get("developer", ""), ctx.get("jid")] for r in items},
+                      ["ur:%d" % r["id"] for r in items])
+            u["local_updates"] = local
+            out.append(u)
+            continue
         for i in range(0, len(items), chunk_rows):
             part = items[i:i + chunk_rows]
             lines = [{"source_id": str(r["id"]), "text": " | ".join(
@@ -175,10 +234,14 @@ def sheet_units(c, jids=None, skip=None, chunk_rows=150):
             lines = [l for l in lines if l["text"].strip()]
             body = {"file": part[0]["file_name"], "sheet": sheet, "chat": ctx["chat"],
                     "chat_profile": ctx["chat_profile"], "rows": lines}
-            out.append(_unit(f"s{part[0]['id']}", "sheets", f"{part[0]['file_name']} / {sheet}", llm.MODEL,
-                             json.dumps(body, ensure_ascii=False) if lines else None,
-                             {str(r["id"]): ["row", str(r["id"]), ts, ctx.get("developer", "")] for r in part},
-                             ["ur:%d" % r["id"] for r in part]))
+            ex = _examples(c, "row", [l["text"] for l in lines], ctx.get("developer", ""), ctx.get("jid")) if lines else None
+            if ex:
+                body["past_decisions"] = ex
+            out.append(_cached(c, _unit(f"s{part[0]['id']}", "sheets", f"{part[0]['file_name']} / {sheet}", llm.MODEL,
+                                        json.dumps(body, ensure_ascii=False) if lines else None,
+                                        {str(r["id"]): ["row", str(r["id"]), ts, ctx.get("developer", ""), ctx.get("jid")]
+                                         for r in part},
+                                        ["ur:%d" % r["id"] for r in part]), ctx.get("developer", "")))
     return out
 
 
@@ -237,12 +300,16 @@ def pdf_units(c, jids=None, skip=None):
             note = (f"{FILE_RULES}\nFile: {f['file_name']} (pages {a}-{b} of {max(pages)}).\n"
                     f"source_id: write 'p' followed by the page number in the ORIGINAL file, e.g. 'p{a}'.\n"
                     f"Chat context: {json.dumps(ctx, ensure_ascii=False)}")
-            content = [{"type": "document", "source": {"type": "base64", "media_type": "application/pdf",
-                                                       "data": base64.standard_b64encode(data).decode()}},
-                       {"type": "text", "text": note}]
-            out.append(_unit(f"p{f['id']}_{a}", "pdfs", f"{f['file_name']} p{a}-{b}", llm.FILE_MODEL, content,
-                             {f"p{n}": ["pdf_page", str(pages[n]), ts, ctx.get("developer", "")] for n in range(a, b + 1) if n in pages},
-                             [key]))
+            content = _with_examples(
+                [{"type": "document", "source": {"type": "base64", "media_type": "application/pdf",
+                                                 "data": base64.standard_b64encode(data).decode()}},
+                 {"type": "text", "text": note}],
+                _examples(c, "pdf_page", [f["file_name"] or "", ctx.get("caption", "")], ctx.get("developer", ""),
+                          ctx.get("jid")))
+            out.append(_cached(c, _unit(f"p{f['id']}_{a}", "pdfs", f"{f['file_name']} p{a}-{b}", llm.FILE_MODEL, content,
+                                        {f"p{n}": ["pdf_page", str(pages[n]), ts, ctx.get("developer", ""), ctx.get("jid")]
+                                         for n in range(a, b + 1) if n in pages},
+                                        [key]), ctx.get("developer", "")))
     return out
 
 
@@ -260,11 +327,14 @@ def image_units(c, jids=None, skip=None):
         ctx = _chat_context(c, r["id"])
         note = (f"{FILE_RULES}\nFile: {r['file_name'] or 'image'}. source_id: write 'img'.\n"
                 f"Chat context: {json.dumps(ctx, ensure_ascii=False)}")
-        content = [{"type": "image", "source": {"type": "base64", "media_type": mt,
-                                                "data": base64.standard_b64encode(open(r["path"], "rb").read()).decode()}},
-                   {"type": "text", "text": note}]
-        out.append(_unit(f"i{r['id']}", "images", r["file_name"] or f"image {r['id']}", llm.FILE_MODEL, content,
-                         {"img": ["image", str(r["rid"]), _file_ts(c, r["id"]), ctx.get("developer", "")]}, [key]))
+        content = _with_examples(
+            [{"type": "image", "source": {"type": "base64", "media_type": mt,
+                                          "data": base64.standard_b64encode(open(r["path"], "rb").read()).decode()}},
+             {"type": "text", "text": note}],
+            _examples(c, "image", [r["file_name"] or "", ctx.get("caption", "")], ctx.get("developer", ""), ctx.get("jid")))
+        out.append(_cached(c, _unit(f"i{r['id']}", "images", r["file_name"] or f"image {r['id']}", llm.FILE_MODEL, content,
+                                    {"img": ["image", str(r["rid"]), _file_ts(c, r["id"]), ctx.get("developer", ""),
+                                             ctx.get("jid")]}, [key]), ctx.get("developer", "")))
     return out
 
 
@@ -287,12 +357,13 @@ def _store(unit_sources, updates):
                 continue
             kind, ref, ts = src[:3]
             dev = src[3] if len(src) > 3 else ""
+            jid = src[4] if len(src) > 4 else None
             if dev:
                 if not u.get("developer"):
                     u = dict(u, developer=dev)  # the chat's developer (profile) when the message doesn't say
                 if _is_developer_not_project(c, u["project"], dev):
                     continue  # "Soma Bay" in Soma Bay's own group is the developer/place, not a project
-            n += master.add_proposal(c, dict(u, source_kind=kind, source_ref=ref, source_ts=ts))
+            n += master.add_proposal(c, dict(u, source_kind=kind, source_ref=ref, source_ts=ts, chat_jid=jid))
     return n
 
 
@@ -320,12 +391,14 @@ def run_stage_live(log, stage, jids=None):
     if units:
         log(f"{dict(STAGES)[stage]}: {len(units)} request(s)")
     written = failed = 0
+    written += _run_local(log, units)
+    units = [u for u in units if u.get("local_updates") is None]
     empty = [u for u in units if u["content"] is None]
     _done([k for u in empty for k in u["keys"]])
     units = [u for u in units if u["content"] is not None]
 
     def ask(u):
-        return llm.call_json(SYSTEM, u["content"], SCHEMA, model=u["model"])["updates"]
+        return llm.call_json(SYSTEM, u["content"], SCHEMA, model=u["model"], purpose=f"extract:{u['stage']}")["updates"]
 
     with ThreadPoolExecutor(LIVE_WORKERS) as pool:
         futures = {pool.submit(ask, u): u for u in units}
@@ -343,10 +416,24 @@ def run_stage_live(log, stage, jids=None):
                 failed += 1
                 continue
             n = _store(u["sources"], out)
+            xc.save_unit(u, out)
             written += n
             _done(u["keys"])
             log(f"{u['label']}: {n} suggestion(s)")
     return written, failed
+
+
+def _run_local(log, units):
+    """Units answered without an LLM call (confirmed template, extraction cache): stored like Claude's answers."""
+    written = 0
+    for u in units:
+        if u.get("local_updates") is None:
+            continue
+        n = _store(u["sources"], u["local_updates"])
+        _done(u["keys"])
+        written += n
+        log(f"{u['label']}: {n} suggestion(s), no LLM call")
+    return written
 
 
 def run_live(log, jids=None):
@@ -414,6 +501,14 @@ def _advance(run_id):
             log(f"Finished: {totals.get('suggestions', 0)} suggestion(s), {totals.get('failed', 0)} failed request(s)")
             log("RESULT " + json.dumps(totals))
             return
+        local_n = _run_local(log, units)
+        if local_n:
+            with db.connect() as c:
+                run = c.execute("SELECT * FROM ingest_runs WHERE id=?", (run_id,)).fetchone()
+                totals = json.loads(run["totals_json"] or "{}")
+                totals["suggestions"] = totals.get("suggestions", 0) + local_n
+                _set_run(c, run_id, totals_json=json.dumps(totals))
+        units = [u for u in units if u.get("local_updates") is None]
         empty = [u for u in units if u["content"] is None]
         if empty:
             _done([k for u in empty for k in u["keys"]])
@@ -435,10 +530,12 @@ def _advance(run_id):
         batch_id = llm.batch_submit(reqs)
         with db.connect() as c:
             for (cid, _), u in zip(reqs, picked):
-                c.execute("INSERT OR REPLACE INTO ingest_items VALUES(?,?,?,?,?,?,?,'pending')",
-                          (cid, run_id, batch_id, stage, u["label"], json.dumps(u["sources"]), json.dumps(u["keys"])))
+                c.execute("INSERT OR REPLACE INTO ingest_items(custom_id,run_id,batch_id,stage,label,sources_json,"
+                          "keys_json,state,cache_json) VALUES(?,?,?,?,?,?,?,'pending',?)",
+                          (cid, run_id, batch_id, stage, u["label"], json.dumps(u["sources"]), json.dumps(u["keys"]),
+                           json.dumps(u.get("cache"))))
             _set_run(c, run_id, batch_id=batch_id, status="waiting")
-        log(f"PROGRESS " + json.dumps({"stage": run["stage"] + 1, "of": len(STAGES), "label": label,
+        log("PROGRESS " + json.dumps({"stage": run["stage"] + 1, "of": len(STAGES), "label": label,
                                        "done": run["stage"], "total": len(STAGES)}))
         log(f"{label}: sent {len(picked)} request(s) to the batch queue ({batch_id}); results usually within an hour")
         return
@@ -460,6 +557,10 @@ def _collect(run):
             state = "failed"
         else:
             written += _store(json.loads(item["sources_json"]), payload.get("updates", []))
+            meta = json.loads(item["cache_json"] or "null") if "cache_json" in item.keys() else None
+            if meta:
+                xc.save_unit({"stage": item["stage"], "model": meta.get("model", ""), "cache": meta},
+                             payload.get("updates", []))
             _done(json.loads(item["keys_json"]))
             state = "done"
         with db.connect() as c:
@@ -528,6 +629,11 @@ def start_poller(seconds):
             time.sleep(seconds)
             try:
                 poll()
+            except Exception:
+                pass
+            try:
+                import retrain
+                retrain.tick()  # nightly / after a re-upload retrain, weekly rule suggestions (no LLM)
             except Exception:
                 pass
     threading.Thread(target=loop, daemon=True, name="batch-poller").start()

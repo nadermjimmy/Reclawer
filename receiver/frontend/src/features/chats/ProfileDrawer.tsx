@@ -37,7 +37,7 @@ export function ProfileDrawer({ jid, chatName, open, onClose, onSaved }: {
   const save = async () => {
     setBusy(true);
     try {
-      const r = await saveProfile(jid, { developer, shares, on_request: onRequest, notes });
+      const r = await saveProfile(jid, { shares, on_request: onRequest, notes });
       toast.show({ message: "Developer profile saved" });
       onSaved(r.profile.developer);
       onClose();
@@ -55,14 +55,9 @@ export function ProfileDrawer({ jid, chatName, open, onClose, onSaved }: {
       {error && <ErrorBanner>{error}</ErrorBanner>}
       {!info && !error ? <Skeleton height={200} /> : info && (
         <div className="profile-form">
-          <p className="small muted">Suggestions from this chat are matched to this developer's rows first, and the brain
-            and the Data Missing insight read the rest.{info.profile?.source === "auto" ? " Filled in from the chat name; check it." : ""}</p>
-          <label className="field">
-            <span className="field-label">Developer</span>
-            <input className="input" list="profile-devs" value={developer} onChange={(e) => setDeveloper(e.target.value)}
-              placeholder="As written on the master sheet" dir="auto" />
-            <datalist id="profile-devs">{info.developers.map((d) => <option key={d} value={d} />)}</datalist>
-          </label>
+          <p className="small muted">How this developer shares data. The brain and the Data Missing insight read it.</p>
+          <p className="small"><span className="muted">Developer:</span> <b dir="auto">{developer || "Not assigned"}</b>
+            <span className="caption muted"> (set it in the bar above the chat)</span></p>
           <fieldset className="field">
             <legend className="field-label">What they send</legend>
             {[["", "Not set"], ["inventory", "Full inventory"], ["starting_prices", "Starting prices only"]].map(([v, l]) => (

@@ -22,51 +22,28 @@ WhatsApp groups -> Evolution API (Railway, public) -> receiver (Railway, private
 6. **Test**: send a message in a group; receiver logs should show `POST /webhook/... 200`.
    Digest: `railway ssh --service receiver python digest.py`
 
-## Inventory web app
+## Web app
 
-The receiver also serves a password-protected web app at `/app` (the root URL opens it; old page links redirect into it) that turns the chosen chats' history and attachments
-into a project -> phase/building -> unit inventory with full source tracing. Code: `receiver/` (`web.py`,
-`history.py`, `parse_files.py`, `mapping.py`, `facts.py`, `media_review.py`, `build.py`).
+The receiver serves a password-protected web app at `/app` (the root URL opens it). Navigation, in order:
+**Chats**, **Insights**, **Sheet** (the master as a Google-Sheets-like grid with approvals and open suggestions),
+**Updates** (the review queue), then **Master** and More (**Pipeline**, **Sources**, **Brain**). Code: `receiver/`
+(API in `api.py`, React app in `receiver/frontend/`).
 
 **Setup (once):** on the `receiver` service add variables `APP_PASSWORD`, `EVOLUTION_URL` (the Evolution
 https domain), `EVOLUTION_API_KEY` (Evolution's `AUTHENTICATION_API_KEY`), `EVOLUTION_INSTANCE` (the instance
-whose chats feed the app; webhooks from any other instance are ignored) and `MARKET` (`eg` - default - or
-`uae`), then Settings -> Networking -> Generate Domain and open it. **Start over** on the dashboard deletes all
-app data (type `DELETE ALL`); WhatsApp and Evolution are not touched.
+whose chats feed the app; webhooks from any other instance are ignored) and `MARKET` (`eg`, the default), then
+Settings -> Networking -> Generate Domain and open it. **Start over** on Pipeline deletes all app data (type
+`DELETE ALL`); WhatsApp and Evolution are not touched.
 
-**Pipeline** (Dashboard, run in order; each step only processes what's new):
-1. Sync chats (groups and private chats) -> tick the inventory chat(s) on **Chats**.
-2. Pull history for the ticked chats (from Evolution's database).
-3. Download attachments (ticked chats; WhatsApp may no longer have old media - listed on **Sources**).
-4. Read files: every workbook/CSV cell and PDF page stored verbatim (`source_rows`), header + column roles
-   detected per sheet (fixable on the review page).
-5. Map projects (Claude): proposes parent project / phase per table using only the file and its chat context.
-6. Extract facts (Claude): location, service charge, payment plan, completion, amenities, handover,
-   phase/unit status - each with its source message or PDF page.
-7. Review images (Claude): proposals only; nothing is shown on a project until approved.
-8. Build inventory: deterministic rebuild of projects/phases/units/snapshots and the review queue.
+**Pipeline:** **Sync all chats** lists chats, pulls history, reads text first, then downloads and reads attachments
+(every workbook/CSV cell and PDF page stored verbatim in `source_rows`) and proposes sheet updates. On their own:
+Propose sheet updates, Brain review, Eval, Retrain, Re-read skipped messages, Rule suggestions.
 
-**Rules this app enforces**
-- No web data: Claude only sees the group's own messages and files.
-- Source values are never changed: unit codes, listed prices and areas are stored as text exactly as in the
-  cell; parsed numbers and price per sq ft are separate, labelled derived fields (with formula + inputs).
-  Price per sq ft is only calculated when the price is a plain number, a currency is stated and the area
-  unit (sq ft / sq m, 1 sq m = 10.7639104167 sq ft) is stated. Arabic column headers are recognised.
-- Owner corrections live in `receiver/owner_rules_<market>.json` (`eg` / `uae`): market name, currency,
-  price-per-area metric (sq m for Egypt, sq ft for UAE), not-a-project names, locations, one-parent groups
-  (UAE: Brabus, Verdana), phase limits, image blocklist. Edit and rebuild.
-- Only high-confidence in-market proposals are used before approval; everything else stays in the review queue and
-  still counts in **Reconciliation** (mapped + queued + excluded = rows in sources).
-- Unit status and phase status are stored separately; conflicts are flagged, not resolved silently.
-- Missing project facts show "Not supplied"; conflicting statements show "Conflict" with every source.
+The old project/unit inventory (map projects, extract facts, review images, build inventory, and the Inventory,
+Review and Reconciliation screens) was removed; its tables are left untouched in existing databases.
 
-**Feed** (`/feed`): every chat shown as a read-only WhatsApp-style channel - text with WhatsApp formatting,
-images, and spreadsheets/PDFs that open in a built-in viewer (sheet tabs, row filter, exact cell values).
-Attachments not downloaded yet are fetched from Evolution as you scroll to them; the feed refreshes every 15 s.
-
-**New app (`/app`):** a React rebuild of the admin pages (Updates, Master, More > Pipeline / Inventory /
-Review / Sources; Chats and Insights coming next), on the JSON API in `receiver/api.py` (`/api/*`, same login).
-Source and dev notes: `receiver/frontend/README.md`. The Docker image builds it; the classic pages keep working.
+**Feed** (`/feed`): every chat shown as a read-only WhatsApp-style channel, with a built-in viewer for
+spreadsheets and PDFs.
 
 **Tests:** `cd receiver && pip install -r requirements.txt pytest && python -m pytest tests`
 
@@ -153,3 +130,52 @@ API: `GET /api/sheet?sheet=&view=all|changed|pending|approved&q=`.
 - **Rounding**: suggested prices round up to the next 50,000 from 1,000,000 EGP, otherwise to the next 1,000.
 - **Insights > Data Missing**: developers whose group is active but whose price rows had no change for 14 days,
   with the sales rep from Sheet 2 (WhatsApp link) and a ready-to-send message.
+
+## Group assignment by the ops team (Phase 0)
+
+Above each group chat: **Developer** (a dropdown of the master's developers; "Suggested" when it was only read from the
+chat name; "Not on the sheet yet" for a new one) and **Projects** (that developer's projects on the master). The chat
+list shows each group's developer or **Unassigned**, has an Unassigned filter and **Assign Groups** for bulk.
+Every ingestion from the group uses it: extraction prompts name the assigned projects, matching tries them first,
+and a match outside them is only a near match (warning "Outside this group's assigned projects") that the brain
+never auto-approves. Assignments are keyed by normalized developer + project, re-checked on every master upload
+(`profiles.relink_projects`; missing ones are flagged, not dropped), and every change is logged in
+`assignment_log` as a team label. Groups the team hasn't assigned behave as before.
+
+## Eval harness (Phase 1)
+
+`receiver/eval/`: `build_gold.py` freezes every decision a **person** made (approved or rejected) into a gold set under
+`/data/eval/gold-<date>/`, split by source kind. `run_eval.py` replays matching on it and measures noise, accepted
+values, auto-approve precision and API cost (from `llm_usage`). It's free by default; `--llm N --max-usd X` is an opt-in
+paid replay. Run it from More > Pipeline > "Eval: brain report (no LLM)". See BASELINE.md.
+
+Labels survive master re-uploads: proposals and brain reviews carry `row_key` (normalized developer | project | sheet)
+and are re-linked to the new rows on import (`label_row_id`; an old approval is never replayed onto the new master).
+A rejection can carry a reason (Updates asks "Why?"). `BRAIN_AUTO_APPROVE` / `BRAIN_AUTO_REJECT` (default `1`, today's
+behaviour) can turn the brain's auto-decisions off. `receiver/normalize.py`: Arabic/Franco normalization and a
+transliteration key that lets 'ماونتن فيو' and 'Mountain View' meet.
+
+## Learning brain (Phases 2–7)
+
+Everything below is **off by default**: with no new variables set, matching, extraction and the brain behave exactly
+as before. More > **Brain** shows model versions, eval per source kind, what reaches an LLM, cost per day, the flags
+and rule suggestions. Models live under `/data/models/` (versioned, with a `-current` pointer).
+
+| Phase | What | Turn on with |
+|---|---|---|
+| 2 | Unified matcher (`matcher.py`): rapidfuzz + char n-gram TF-IDF on names and transliteration keys, developer-scoped aliases (`dev_aliases`), team assignment, chat history; trained scorer (`train_matcher.py`) | `MATCHER=shadow` (logs disagreements, legacy still decides) → `MATCHER=v2`. `MATCH_AUTO=<p>` treats matches above p as certain (unset = never) |
+| 2 | Brain places suggestions with the matcher; only the rest go to Haiku with the top 3 rows | `BRAIN_MATCHER=v2` (+ `MATCH_AUTO` for LLM-free placement) |
+| 3 | Learning memory (`learned_examples`, every person decision and Reopen); past decisions in the user turn of extraction and brain requests | `FEWSHOT=1` (`FEWSHOT_K`, default 6) |
+| 3 | Weekly rule suggestions from rejections → `/data/review/rule-suggestions-<date>.json` | always on, never applied |
+| 4 | Noise filter for text messages (`noise.py`); skips are logged and re-queueable (Pipeline: Re-read skipped) | `NOISE_SKIP=<p>` only after the eval shows false skips < 1% |
+| 5 | Egyptian notation in `cell_parse` (Arabic digits, مليون/ألف, م², مقدم/سنين, غرف, صافي) | always on (raw text kept verbatim) |
+| 5 | Spreadsheet templates: "Confirm Columns" on a sheet-row source; same layout from the same developer read in code | `TEMPLATES=1` |
+| 5 | Extraction cache for re-reads and forwarded messages (same developer only) | `EXTRACTION_CACHE=1` |
+| 6 | Price guards (`guards.py`, EGP/sq m median/MAD) + matcher probability instead of the model's "high" for auto-approve | `GUARDS_V2=1` (needs `MATCH_AUTO`) |
+| 7 | Retrain loop (`retrain.py`): nightly when 25+ new labels, after a master re-upload, or Pipeline: Retrain; promotes only if no worse | always on; `RETRAIN_MIN_LABELS` |
+
+Never auto-approved, whatever the flags: commission, feedback, location, Hold/Hide, new rows, anything outside a
+group's assigned projects. Models never write to the sheet; every change goes through `master.decide_detail`.
+Suggested order to enable: run Pipeline > Retrain and Eval; `MATCHER=shadow` for a few days; compare legacy vs
+unified on More > Brain; then `MATCHER=v2`, `BRAIN_MATCHER=v2`, `EXTRACTION_CACHE=1`, `FEWSHOT=1`; set `MATCH_AUTO`
+from the trainer's suggestion; `GUARDS_V2=1`; `NOISE_SKIP` last.

@@ -1,4 +1,4 @@
-import { Boxes, ChartColumn, ClipboardCheck, FileSpreadsheet, FolderOpen, Inbox, MessagesSquare, Sheet, Workflow, type LucideIcon } from "lucide-react";
+import { Brain, ChartColumn, FileSpreadsheet, FolderOpen, Inbox, MessagesSquare, Sheet, Workflow, type LucideIcon } from "lucide-react";
 import type { ShellCounts } from "../api/session";
 
 export interface NavItem {
@@ -11,19 +11,18 @@ export interface NavItem {
   railOnly?: boolean;
 }
 
-/** Primary destinations (rail on desktop, bottom tabs on phone). Part 2 owns Chats and Insights. */
+/** Primary destinations, in this order (rail on desktop, bottom tabs on phone). */
 export const PRIMARY_NAV: NavItem[] = [
-  { to: "/updates", label: "Updates", icon: Inbox, badge: "open_suggestions" },
-  { to: "/sheet", label: "Sheet", icon: Sheet, railOnly: true },
   { to: "/chats", label: "Chats", icon: MessagesSquare, badge: "chats_with_suggestions" },
   { to: "/insights", label: "Insights", icon: ChartColumn },
-  { to: "/master", label: "Master", icon: FileSpreadsheet, badge: "rows_to_place" },
+  { to: "/sheet", label: "Sheet", icon: Sheet },
+  { to: "/updates", label: "Updates", icon: Inbox, badge: "open_suggestions" },
+  { to: "/master", label: "Master", icon: FileSpreadsheet, badge: "rows_to_place", railOnly: true },
 ];
 
 /** Under More (also listed in the desktop rail). */
 export const MORE_NAV: NavItem[] = [
   { to: "/more/pipeline", label: "Pipeline", icon: Workflow },
-  { to: "/more/inventory", label: "Inventory", icon: Boxes },
-  { to: "/more/review", label: "Review", icon: ClipboardCheck, badge: "open_issues" },
   { to: "/more/sources", label: "Sources", icon: FolderOpen, badge: "failed_downloads" },
+  { to: "/more/brain", label: "Brain", icon: Brain },
 ];

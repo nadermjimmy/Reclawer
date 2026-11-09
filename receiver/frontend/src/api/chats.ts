@@ -3,7 +3,7 @@
 import { get, post, request } from "./client";
 import type { Proposal, ProposalState } from "./proposals";
 
-export type ChatFilter = "all" | "inventory" | "suggestions" | "groups" | "private";
+export type ChatFilter = "all" | "inventory" | "suggestions" | "groups" | "private" | "unassigned";
 
 export interface Chat {
   jid: string;
@@ -22,6 +22,9 @@ export interface Chat {
   new_since_sync: number | null;
   /** Developer this chat belongs to (developer profile; auto from "<Developer> & Byit App"). */
   developer?: string;
+  /** True when the Byit team set the developer (not just guessed from the chat name). */
+  assigned?: boolean;
+  assigned_projects?: number;
 }
 
 export interface DeveloperProfile {
@@ -41,7 +44,7 @@ export interface ProfileInfo {
 }
 
 export const getProfile = (jid: string) => get<ProfileInfo>(`/chats/${encodeURIComponent(jid)}/profile`);
-export const saveProfile = (jid: string, p: { developer: string; shares: string; on_request: string[]; notes: string }) =>
+export const saveProfile = (jid: string, p: { developer?: string; shares: string; on_request: string[]; notes: string }) =>
   request<{ profile: DeveloperProfile }>(`/chats/${encodeURIComponent(jid)}/profile`, {
     method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(p),
   });
@@ -147,3 +150,24 @@ export const chatSuggestions = (jid: string, state?: ProposalState) =>
 export const syncChat = (jid: string, addToScope = false) =>
   post<{ job_id: number; jid: string }>(`/chats/${enc(jid)}/sync`, { add_to_scope: addToScope });
 export const search = (q: string, chat?: string, limit = 50) => get<SearchResults>("/search", { q, chat, limit });
+
+
+/* ---------- team assignment: chat -> developer + projects ---------- */
+export interface DevProject { project_key: string; project: string; sheets: string[] }
+export interface AssignedProject { project_key: string; project_label: string; sheet: string; status: "ok" | "missing" }
+export interface Assignment {
+  profile: DeveloperProfile | null;
+  developers: string[];
+  projects: DevProject[];
+  assigned: AssignedProject[];
+  /** Developer guessed from the chat name, not confirmed by the team yet. */
+  suggested: string;
+}
+
+export const getAssignment = (jid: string, developer?: string) =>
+  get<Assignment>(`/chats/${encodeURIComponent(jid)}/assignment`, developer ? { developer } : undefined);
+export const saveAssignment = (jid: string, body: { developer: string; project_keys?: string[]; new_developer?: boolean }) =>
+  request<{ profile: DeveloperProfile; assigned: AssignedProject[] }>(`/chats/${encodeURIComponent(jid)}/assignment`, {
+    method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+  });
+export const bulkAssign = (jids: string[], developer: string) => post<{ assigned: string[] }>("/chats/assign", { jids, developer });

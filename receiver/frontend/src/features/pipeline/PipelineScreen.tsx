@@ -61,8 +61,7 @@ export function PipelineScreen() {
           <Stat value={fmtNumber(c.in_scope)} label="Inventory chats" />
           <Stat value={fmtNumber(c.messages)} label="Messages" />
           <Stat value={fmtNumber(c.files)} label="Files" />
-          <Stat value={fmtNumber(c.projects)} label="Projects" />
-          <Stat value={fmtNumber(c.units)} label="Units" />
+          <Stat value={fmtNumber(c.suggestions)} label="Open suggestions" />
         </div>
       )}
 
@@ -83,8 +82,8 @@ export function PipelineScreen() {
       <div className="pipeline-grid">
         <Card eyebrow="Steps" title="Run One Step">
           <p className="small muted steps-help">
-            Run the steps in order the first time. After that, run any step when new messages arrive; each step only
-            processes what is new, and step 8 rebuilds the inventory from scratch.
+            Sync all chats (above) pulls messages and files and reads them. Run these on their own when you need one
+            again: each only processes what is new.
           </p>
           <ol className="steps">
             {all.filter((s) => s.key !== "chat_routine").map((s) => (
@@ -129,8 +128,7 @@ export function PipelineScreen() {
 
           <Card eyebrow="Danger zone" title="Start Over" className="danger-card">
             <p className="small">
-              Deletes every pulled message, downloaded file, mapping, fact, image decision, master upload and inventory row in this
-              app. WhatsApp and Evolution are not touched.
+              Deletes every pulled message, downloaded file, suggestion, decision and master upload in this app. WhatsApp and Evolution are not touched.
             </p>
             <div>
               <Button variant="danger" icon={<Trash2 size={16} />} disabled={Boolean(running)} title={blockedTitle}

@@ -38,8 +38,9 @@ def test_unauthenticated():
         r = anon.get(path, follow_redirects=False)
         assert r.status_code == 401 and r.json() == {"error": "login"}, path
     assert anon.post("/api/proposals/decide", json={}).status_code == 401
-    r = anon.get("/projects", follow_redirects=False)  # old page URLs open the matching app screen
-    assert r.status_code == 303 and r.headers["location"] == "/app/projects"
+    r = anon.get("/groups", follow_redirects=False)  # old page URLs open the matching app screen
+    assert r.status_code == 303 and r.headers["location"] == "/app/groups"
+    assert anon.get("/projects", follow_redirects=False).headers["location"] == "/app"  # old inventory page: gone
     assert anon.get("/", follow_redirects=False).headers["location"] == "/app"
     assert anon.get("/sources/file/1", follow_redirects=False).headers["location"] == "/app"  # files need a session
     assert anon.get("/app/updates").status_code in (200, 503)  # the app shell loads and shows its own login
@@ -56,7 +57,7 @@ def test_unauthenticated():
 def test_me_before_master(client):
     me = client.get("/api/me").json()
     assert me["has_master"] is False and me["market"]["short"] and me["job"] is None
-    assert set(me["counts"]) >= {"open_suggestions", "rows_to_place", "open_issues", "chats_with_suggestions"}
+    assert set(me["counts"]) >= {"open_suggestions", "rows_to_place", "chats_with_suggestions"}
     assert client.get("/api/proposals").json()["has_master"] is False
     assert client.get("/api/master/export/team").status_code == 409
 
@@ -180,7 +181,8 @@ def test_jobs_start_and_poll(client, monkeypatch):
     steps = client.get("/api/steps").json()
     keys = [s["key"] for s in steps]
     assert keys[0] == "chat_routine" and "propose_updates" in keys
-    assert next(s for s in steps if s["key"] == "parse_files")["redo_label"]
+    assert next(s for s in steps if s["key"] == "brain_review")["redo_label"]
+    assert not {"map_projects", "extract_facts", "classify_images", "build", "parse_files"} & set(keys)
     gate = threading.Event()
 
     def fake(log, redo=False):
@@ -189,12 +191,14 @@ def test_jobs_start_and_poll(client, monkeypatch):
         log(f"redo={redo}")
         log("RESULT " + json.dumps({"suggestions": 4}))
 
-    monkeypatch.setattr(web, "STEPS", [("parse_files", "Fake read", "test step", fake)])
+    import api
+    monkeypatch.setattr(web, "STEPS", [("fake_step", "Fake read", "test step", fake)])
+    monkeypatch.setattr(api, "REDO", {"fake_step": "Redo"})
     assert client.post("/api/jobs/nope").status_code == 404
-    r = client.post("/api/jobs/parse_files", json={"redo": True})
+    r = client.post("/api/jobs/fake_step", json={"redo": True})
     assert r.status_code == 202
     job_id = r.json()["job_id"]
-    busy = client.post("/api/jobs/parse_files")
+    busy = client.post("/api/jobs/fake_step")
     assert busy.status_code == 409 and busy.json()["error"] == "busy" and busy.json()["job"]["id"] == job_id
     assert client.get("/api/me").json()["job"]["id"] == job_id
     deadline = time.time() + 5
@@ -212,26 +216,16 @@ def test_jobs_start_and_poll(client, monkeypatch):
     assert client.get("/api/jobs/999999").status_code == 404
 
 
-def test_legacy_ports(client):
+def test_sources_routes(client):
     import db
     with db.connect() as c:
-        slug = c.execute("SELECT slug FROM projects LIMIT 1").fetchone()[0]
-        unit = c.execute("SELECT id FROM units LIMIT 1").fetchone()[0]
         row = c.execute("SELECT id FROM source_rows WHERE kind='sheet_row' LIMIT 1").fetchone()[0]
-    assert client.get("/api/projects").json()
-    p = client.get(f"/api/projects/{slug}").json()
-    assert p["project"]["slug"] == slug and {f["type"] for f in p["key_facts"]} and "units" in p
-    assert client.get("/api/units").json()["total"] >= 1
-    assert client.get(f"/api/units/{unit}").json()["snapshots"]
-    assert "issues" in client.get("/api/review/issues").json()
-    assert "mappings" in client.get("/api/review/mappings?state=all").json()
-    assert isinstance(client.get("/api/review/images").json(), list)
-    assert isinstance(client.get("/api/review/facts").json(), list)
+    for gone in ("/api/projects", "/api/units", "/api/review/issues", "/api/reconciliation"):
+        assert client.get(gone).status_code == 404, gone
     src = client.get("/api/sources").json()
     assert src["files"] and src["failed"][0]["wa_id"] == "gone"
     assert client.get(f"/api/sources/rows/{row}").json()["kind"] == "row"
     assert client.get("/api/sources/messages/m1").json()["message"]["id"] == "m1"
-    assert client.get("/api/reconciliation").json()["report"]["adds_up"]
     assert client.get("/api/pipeline").json()["counts"]["messages"] >= 7
     assert client.post("/api/reset", json={"confirm": "nope"}).status_code == 422
 

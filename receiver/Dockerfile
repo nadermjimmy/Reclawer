@@ -10,6 +10,8 @@ RUN npm run build
 # Stage 2: the receiver (webhook + classic pages + /api + /app).
 FROM python:3.12-slim
 WORKDIR /app
+# LightGBM's OpenMP runtime (not in the slim image)
+RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 && rm -rf /var/lib/apt/lists/*
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY . .

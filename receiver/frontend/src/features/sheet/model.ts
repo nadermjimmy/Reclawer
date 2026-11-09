@@ -5,9 +5,11 @@ export type Shown = "current" | "master";
 
 export interface Pos { r: number; c: number }
 
-export const ROW_H = 24;
-export const LETTER_H = 20;
-export const HEADER_H = 24;
+// Google Sheets metrics: 21px rows and headers, 100px default column.
+export const ROW_H = 21;
+export const LETTER_H = 21;
+export const HEADER_H = 21;
+export const FILL_COL_W = 100;
 export const HEAD_H = LETTER_H + HEADER_H;
 
 const EMPTY: SheetCell = { master: "" };
@@ -61,10 +63,22 @@ export function columnWidths(cols: SheetColumn[], rows: SheetRow[]): number[] {
       if (longest > 40) break;
     }
     const max = col.field === "project" ? 220 : col.field === "developer" ? 170 : 200;
-    const fromData = longest * 7.4 + 18;
-    const fromLabel = col.label.length * 7.6 + 18;
+    const fromData = longest * 7.2 + 14;
+    const fromLabel = col.label.length * 7.4 + 14;
     return Math.round(Math.min(max, Math.max(60, fromData, Math.min(fromLabel, 150))));
   });
+}
+
+/** 'A' -> 0, 'Z' -> 25, 'AA' -> 26. */
+export function letterIndex(l: string) {
+  return [...l.toUpperCase()].reduce((n, ch) => n * 26 + (ch.charCodeAt(0) - 64), 0) - 1;
+}
+
+/** 0 -> 'A', 26 -> 'AA'. */
+export function letterAt(i: number) {
+  let s = "";
+  for (let n = i + 1; n > 0; n = Math.floor((n - 1) / 26)) s = String.fromCharCode(65 + ((n - 1) % 26)) + s;
+  return s;
 }
 
 /** Ctrl/Cmd+Arrow like Sheets: to the end of the current block of filled cells, else to the next filled cell,

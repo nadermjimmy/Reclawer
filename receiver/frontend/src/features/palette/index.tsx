@@ -2,7 +2,7 @@
    "Sync <chat>", "Download team file" or "Rows to place". Keyboard: ↑/↓ move, Enter runs, Esc closes. */
 import { AnimatePresence, motion } from "framer-motion";
 import {
-  ArrowRight, Boxes, ChartColumn, ClipboardCheck, Download, FileSpreadsheet, FolderOpen, Inbox, MessageSquare,
+  ArrowRight, Brain, ChartColumn, Sheet, Download, FileSpreadsheet, FolderOpen, Inbox, MessageSquare,
   MessagesSquare, RefreshCw, Search, Upload, Workflow, type LucideIcon,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
@@ -128,8 +128,8 @@ function Palette({ onClose }: { onClose: () => void }) {
         { id: "dl-sql", group: "Actions" as const, icon: Download, label: "Download SQL file", run: () => download("sql") },
       ] : []),
       { id: "go-pipeline", group: "Actions", icon: Workflow, label: "Go to Pipeline", run: () => go("/more/pipeline") },
-      { id: "go-inventory", group: "Actions", icon: Boxes, label: "Go to Inventory", run: () => go("/more/inventory") },
-      { id: "go-review", group: "Actions", icon: ClipboardCheck, label: "Go to Review", run: () => go("/more/review") },
+      { id: "go-sheet", group: "Actions", icon: Sheet, label: "Go to Sheet", run: () => go("/sheet") },
+      { id: "go-brain", group: "Actions", icon: Brain, label: "Go to Brain", run: () => go("/more/brain") },
       { id: "go-sources", group: "Actions", icon: FolderOpen, label: "Go to Sources", run: () => go("/more/sources") },
     ];
     const matchedActions = toks.length ? actions.filter((a) => matchesAll(a.label, toks)) : actions.slice(0, 8);

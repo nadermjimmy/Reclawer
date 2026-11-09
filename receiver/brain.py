@@ -99,7 +99,7 @@ class Rows:
         return s
 
     def candidates(self, project, developer, chat_jid, current_row_id, limit=8, chat_limit=6, dev_limit=15,
-                   chat_developer=""):
+                   chat_developer="", assigned=()):
         key, toks, dev_key = cp.normalize_project_key(project), _tokens(project), cp.normalize_project_key(developer)
         scored = sorted(((self.score(key, toks, dev_key, r), r["id"]) for r in self.rows), reverse=True)
         ids = [rid for s, rid in scored[:limit] if s >= 0.3]
@@ -110,6 +110,9 @@ class Rows:
         for rid in self.chat_rows.get(chat_jid, [])[:chat_limit]:  # rows this chat has updated before
             if rid not in ids:
                 ids.append(rid)
+        if assigned:  # the team's assignment for this group comes first
+            ours = [rid for s, rid in scored if self.by_id[rid]["project_key"] in assigned]
+            ids = ours + [i for i in ids if i not in ours]
         if current_row_id and current_row_id in self.by_id and current_row_id not in ids:
             ids.insert(0, current_row_id)
         return [self.by_id[i] for i in ids]
@@ -122,12 +125,30 @@ def _price(parsed, field):
     return parsed.get("price_egp")
 
 
-def safe_to_approve(c, p, confidence):
-    """Owner's auto-approve rules. Returns (ok, why_not)."""
-    if confidence != "high":
+GUARDS_V2 = os.getenv("GUARDS_V2", "0") == "1"  # Phase 6: matcher probability + price history instead of "high"
+
+
+def safe_to_approve(c, p, confidence, assigned=(), match_p=None, chat_jid=None):
+    """Owner's auto-approve rules. Returns (ok, why_not). `assigned`: the group's team-assigned project keys.
+    GUARDS_V2=1: certainty comes from the matcher's probability (>= MATCH_AUTO) and the price check from the
+    project's own EGP/sq m history (guards.py) instead of the model's "high" and the fixed ±band."""
+    import matcher
+    if GUARDS_V2:
+        if matcher.MATCH_AUTO is None:
+            return False, "MATCH_AUTO isn't set"
+        if p["row_id"] is not None and match_p is None:
+            row = c.execute("SELECT * FROM master_rows WHERE id=?", (p["row_id"],)).fetchone()
+            match_p = matcher.row_probability(c, p, row, chat_jid, assigned) if row else 0.0
+        if (match_p or 0) < matcher.MATCH_AUTO:
+            return False, f"matcher {match_p or 0:.2f} is below {matcher.MATCH_AUTO:.2f}"
+    elif confidence != "high":
         return False, "not certain enough"
     if p["row_id"] is None:
         return False, "new rows always need a person"
+    if assigned:
+        row = c.execute("SELECT project_key FROM master_rows WHERE id=?", (p["row_id"],)).fetchone()
+        if not row or row["project_key"] not in assigned:
+            return False, "outside this group's assigned projects"
     if p["field"] not in AUTO_FIELDS:
         return False, f"{p['field'].replace('_', ' ')} changes always need a person"
     new = json.loads(p["new_parsed_json"] or "{}")
@@ -137,6 +158,10 @@ def safe_to_approve(c, p, confidence):
         return False, "Hold/Hide changes need a person"
     _, old = master.current(c, p["row_id"], p["field"])
     a, b = _price(old, p["field"]), _price(new, p["field"])
+    if GUARDS_V2:
+        import guards
+        ok, why = guards.check(c, p["row_id"], p["field"], new)
+        return (True, "") if ok else (False, why)
     if a and b and abs(b - a) / a > PRICE_BAND:
         return False, f"price moves {((b - a) / a) * 100:+.0f}%, more than ±{PRICE_BAND * 100:.0f}%"
     return True, ""
@@ -160,24 +185,30 @@ def _retarget(c, p, row):
             and not master.approval_date(c, row["id"]) and not any("Hold/Hide" in w for w in warn)):
         warn.append("Approving writes today's date and lifts Hold/Hide on Sheet 2")
     try:
-        c.execute("UPDATE proposals SET row_id=?, sheet=?, old_raw=?, match_state=?, matched_label=?, warning=? "
-                  "WHERE id=?", (row["id"], sheet, old_raw, "exact" if same_name else "near", row["project"],
-                                 "; ".join(warn), p["id"]))
+        c.execute("UPDATE proposals SET row_id=?, sheet=?, old_raw=?, match_state=?, matched_label=?, warning=?, "
+                  "row_key=? WHERE id=?", (row["id"], sheet, old_raw, "exact" if same_name else "near", row["project"],
+                                           "; ".join(warn), master.row_key_of(row), p["id"]))
     except Exception:  # an identical suggestion already targets this row
         return None
     master._supersede(c, p["id"])
     return c.execute("SELECT * FROM proposals WHERE id=?", (p["id"],)).fetchone()
 
 
-def _record(c, pid, d, action, model=MODEL):
-    c.execute("INSERT OR REPLACE INTO brain_reviews VALUES(?,?,?,?,?,?,?,?)",
-              (pid, d["verdict"], d.get("row_id") or None, d["confidence"], d["reason"], action, model, int(time.time())))
+def _record(c, pid, d, action, model=None):
+    model = model or d.get("model") or MODEL
+    row = c.execute("SELECT * FROM master_rows WHERE id=?", (d.get("row_id") or 0,)).fetchone()
+    c.execute("INSERT OR REPLACE INTO brain_reviews(proposal_id,verdict,row_id,confidence,reason,action,model,"
+              "created_at,row_key) VALUES(?,?,?,?,?,?,?,?,?)",
+              (pid, d["verdict"], d.get("row_id") or None, d["confidence"], d["reason"], action, model,
+               int(time.time()), master.row_key_of(row) if row else None))
+
+
+AUTO_APPROVE = os.getenv("BRAIN_AUTO_APPROVE", "1") != "0"  # existing behaviour, kept ON; 0 turns it off
+AUTO_REJECT = os.getenv("BRAIN_AUTO_REJECT", "1") != "0"
 
 
 def _decide(pid, action, reason):
-    master.decide_detail([pid], action)
-    with db.connect() as c:
-        c.execute("UPDATE proposals SET decided_by='brain' WHERE id=? AND state IN ('approved','rejected')", (pid,))
+    master.decide_detail([pid], action, actor="brain")
 
 
 # ---------- review ----------
@@ -190,13 +221,15 @@ def _open_suggestions(c, jids, redo=False):
     return [p for p in out if jids is None or p["chat_jid"] in jids]
 
 
-def _group_payload(c, rows, key, items):
+def _group_payload(c, rows, key, items, cands=None):
     first = items[0]
     prof = profiles.get(c, first["chat_jid"]) if first["chat_jid"] else None
-    cands = rows.candidates(first["project"], first["developer"], first["chat_jid"], first["row_id"],
-                            chat_developer=prof["developer"] if prof else "")
+    assigned = profiles.assigned_keys(c, first["chat_jid"])
+    if cands is None:
+        cands = rows.candidates(first["project"], first["developer"], first["chat_jid"], first["row_id"],
+                                chat_developer=prof["developer"] if prof else "", assigned=assigned)
     fields = sorted({p["field"] for p in items})
-    return {
+    payload = {
         "group_id": key,
         "chat": first["chat_name"] or first["chat_jid"] or "",
         "chat_profile": profiles.describe(prof),
@@ -207,7 +240,48 @@ def _group_payload(c, rows, key, items):
         "candidates": [{"row_id": r["id"], "sheet": master.home_sheet(r), "developer": r["developer"] or "",
                         "project": r["project"], "location": r["location_code"] or "",
                         "current_values": {f: master.current(c, r["id"], f)[0] for f in fields}} for r in cands],
-    }, {r["id"] for r in cands}
+    }
+    if FEWSHOT:  # Phase 3: how people decided similar suggestions before (user turn; the system prompt is unchanged)
+        import memory
+        ex = memory.retrieve(c, "brain", " ".join(f"{p['project']} {p['quote'] or ''}" for p in items[:5]),
+                             prof["developer"] if prof else first["developer"] or "", jid=first["chat_jid"])
+        if ex:
+            payload["past_decisions"] = memory.as_prompt(ex)
+    return payload, ({r["id"] for r in cands}, assigned)
+
+
+BRAIN_MATCHER = os.getenv("BRAIN_MATCHER", "legacy")  # v2: the matcher places suggestions; Haiku only breaks ties
+TIEBREAK_MODEL = os.getenv("CLAUDE_TIEBREAK_MODEL", "claude-haiku-5-5")
+FEWSHOT = os.getenv("FEWSHOT", "0") == "1"
+
+
+def _v2_route(c, rows, groups):
+    """BRAIN_MATCHER=v2: groups the matcher places with p >= MATCH_AUTO become decisions without an LLM call; the
+    rest go to the tie-break model with the matcher's top 3 rows. Returns (auto [(d, allowed)], payloads)."""
+    import matcher
+    _, ver = matcher.model()
+    auto, payloads = [], []
+    for i, items in enumerate(groups):
+        first = items[0]
+        assigned = profiles.assigned_keys(c, first["chat_jid"])
+        prof = profiles.get(c, first["chat_jid"]) if first["chat_jid"] else None
+        q = matcher.Query(first["project"], first["developer"] or (prof["developer"] if prof else ""),
+                          first["chat_jid"], assigned, first["field"], first["source_kind"], first["location_code"] or "")
+        ranked = matcher.scored(c, q)
+        top = ranked[0] if ranked else None
+        if top and matcher.MATCH_AUTO is not None and top[1] >= matcher.MATCH_AUTO:
+            row, p, _ = top
+            for it in items:
+                auto.append(({"proposal_id": it["id"], "verdict": "update_existing", "row_id": row["id"],
+                              "confidence": "high", "match_p": p, "model": f"matcher-{ver}",
+                              "reason": f"Matcher {p:.2f}: '{it['project']}' is {row['project']} "
+                                        f"({master.home_sheet(row)})"}, ({row["id"]}, assigned)))
+            continue
+        cands = [r for r, _, _ in ranked[:3]]
+        if first["row_id"] and first["row_id"] in rows.by_id and first["row_id"] not in {r["id"] for r in cands}:
+            cands.insert(0, rows.by_id[first["row_id"]])
+        payloads.append(_group_payload(c, rows, f"g{i}", items, cands))
+    return auto, payloads
 
 
 def review(log, jids=None, redo=False):
@@ -225,8 +299,16 @@ def review(log, jids=None, redo=False):
         groups = {}
         for p in todo:
             groups.setdefault((p["chat_jid"] or "", p["project_key"]), []).append(p)
-        payloads = [_group_payload(c, rows, f"g{i}", items) for i, items in enumerate(groups.values())]
-    log(f"Brain: reviewing {len(todo)} suggestion(s) in {len(payloads)} project group(s)")
+        auto = []
+        if BRAIN_MATCHER == "v2":
+            auto, payloads = _v2_route(c, rows, list(groups.values()))
+        else:
+            payloads = [_group_payload(c, rows, f"g{i}", items) for i, items in enumerate(groups.values())]
+    log(f"Brain: reviewing {len(todo)} suggestion(s) in {len(groups)} project group(s)"
+        + (f"; {len(auto)} placed by the matcher, {len(payloads)} group(s) to {TIEBREAK_MODEL}" if BRAIN_MATCHER == "v2" else ""))
+    for d, allowed_d in auto:
+        _apply(d, allowed_d, totals, log)
+    model = TIEBREAK_MODEL if BRAIN_MATCHER == "v2" else MODEL
     allowed = {}
     for payload, ids in payloads:
         for s in payload["suggestions"]:
@@ -235,7 +317,9 @@ def review(log, jids=None, redo=False):
 
     def ask(chunk):
         body = {"groups": [p for p, _ in chunk]}
-        return llm.call_json(SYSTEM, json.dumps(body, ensure_ascii=False), SCHEMA, model=MODEL)["decisions"]
+        out = llm.call_json(SYSTEM, json.dumps(body, ensure_ascii=False), SCHEMA, model=model,
+                            purpose="brain" if model == MODEL else "brain:tiebreak")["decisions"]
+        return [dict(d, model=model) for d in out]
 
     with ThreadPoolExecutor(WORKERS) as pool:
         futures = [pool.submit(ask, ch) for ch in chunks]
@@ -253,7 +337,8 @@ def review(log, jids=None, redo=False):
     return totals
 
 
-def _apply(d, allowed_rows, totals, log):
+def _apply(d, allowed, totals, log):
+    allowed_rows, assigned = allowed
     pid = d["proposal_id"]
     with db.connect() as c:
         p = c.execute("SELECT * FROM proposals WHERE id=? AND state='proposed'", (pid,)).fetchone()
@@ -278,7 +363,8 @@ def _apply(d, allowed_rows, totals, log):
             else:
                 reject, why = False, ""
             if not reject:
-                ok, why_not = safe_to_approve(c, p, conf)
+                ok, why_not = safe_to_approve(c, p, conf, assigned, d.get("match_p"),
+                                              brain_chat(c, pid))
                 _record(c, pid, dict(d, reason=d["reason"] if ok else f"{d['reason']} (left for you: {why_not})"),
                         "approved" if ok else "kept")
                 action = "approve" if ok else None
@@ -290,11 +376,21 @@ def _apply(d, allowed_rows, totals, log):
         else:
             _record(c, pid, d, "kept")
             action = None
+    if (action == "approve" and not AUTO_APPROVE) or (action == "reject" and not AUTO_REJECT):
+        with db.connect() as c:  # flag off: leave it for a person, keep the brain's verdict as advice
+            c.execute("UPDATE brain_reviews SET action='kept', reason=reason||? WHERE proposal_id=?",
+                      (f" (auto-{action} is off)", pid))
+        action = None
     if action:
         _decide(pid, action, d["reason"])
         totals["approved" if action == "approve" else "rejected"] += 1
     else:
         totals["kept"] += 1
+
+
+def brain_chat(c, pid):
+    r = c.execute(f"SELECT {CHAT_SQL} jid FROM proposals p WHERE p.id=?", (pid,)).fetchone()
+    return r["jid"] if r else None
 
 
 def reopen(pid):
@@ -305,4 +401,9 @@ def reopen(pid):
             return False
         c.execute("UPDATE proposals SET state='proposed', decided_at=NULL, decided_by=NULL WHERE id=?", (pid,))
         c.execute("UPDATE brain_reviews SET action='reopened' WHERE proposal_id=?", (pid,))
+        try:
+            import memory
+            memory.record(c, pid, "reopened")  # a person overturned the brain: a strong label
+        except ImportError:
+            pass
     return True

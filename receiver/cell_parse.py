@@ -57,6 +57,43 @@ def normalize_project_key(name):
     return "".join(ch for ch in s if ch.isalnum())
 
 
+# ---------- Egyptian notation (Phase 5) ----------
+# Values are parsed from an Egyptian-normalized COPY of the text; the raw text is always kept verbatim.
+_EG_DIGITS = str.maketrans("٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹٫٬", "01234567890123456789.,")
+_CURRENCY = re.compile(r"(?:ج\s*\.\s*م\.?|جم\b|جنيه(?:ا|ات)?|جنية|\begp\b|\bl\.\s?e\.?|\ble\b|\bpounds?\b)", re.I)
+_SQM = re.compile(r"(?:م²|m²|\bm2\b|\bsq\.?\s?m(?:eters?)?\b|\bsqm\b|متر(?:\s*مربع)?|مترمربع|(?<=\d)\s*م(?![\u0621-\u064a])|\bم\b)", re.I)
+_MILLION = re.compile(r"(\d+(?:[.,]\d{1,3})?)\s*(?:مليون|ملايين|million|mill?\b|mn\b)", re.I)
+_THOUSAND = re.compile(r"(\d+(?:[.,]\d{1,3})?)\s*(?:الف|ألف|آلاف|الاف|thousand\b|k\b)", re.I)
+_BED_WORDS = [(re.compile(r"غرفتين|اوضتين|أوضتين", re.I), "2 bed"), (re.compile(r"(?<!\d\s)(?:غرفة|غرفه|اوضة|أوضة)\b"), "1 bed"),
+              (re.compile(r"(\d+)\s*(?:غرف|اوض|أوض|ghoraf|ghorf|owad|rooms?|bedrooms?|beds?|br\b|b\b)", re.I), r"\1 bed")]
+_PP_FILLER = re.compile(r"(?:مقدم|المقدم|down\s*payment|downpayment|\bdp\b|على|علي|تقسيط|اقساط|أقساط|installments?|over|"
+                        r"\bو\b|\band\b|\bon\b|\bwith\b|[-–:/,+])", re.I)
+_YEARS = re.compile(r"(\d+(?:[.,]\d+)?)\s*(?:y|yr|yrs|years?|سنين|سنوات|سنه|سنة|سنا|عام|اعوام)(?![a-z])", re.I)
+_PCT = re.compile(r"(\d+(?:[.,]\d+)?)\s*%|%\s*(\d+(?:[.,]\d+)?)")
+
+
+def _mult(m, factor):
+    return f"{float(m.group(1).replace(',', '.')) * factor:.0f}"
+
+
+def eg_text(s):
+    """Arabic-Indic digits, مليون / ألف multipliers, EGP and sq m words: '١٣٠ م / ٧.٥ مليون ج.م' -> '130 / 7500000'."""
+    t = text(s).translate(_EG_DIGITS)
+    t = _CURRENCY.sub(" ", t)
+    t = _SQM.sub(" ", t)
+    t = _MILLION.sub(lambda m: _mult(m, 1e6), t)
+    t = _THOUSAND.sub(lambda m: _mult(m, 1e3), t)
+    return " ".join(t.split())
+
+
+def eg_beds(s):
+    """'غرفتين' / '3 ghoraf' / '3 غرف' -> '2 bed' / '3 bed'."""
+    t = eg_text(s)
+    for pat, rep in _BED_WORDS:
+        t = pat.sub(rep, t)
+    return t
+
+
 def status_of(s):
     """First recognised status word in s, or ''."""
     low = (s or "").strip().lower()
@@ -75,7 +112,7 @@ def parse_unit_cell(raw):
     out = {"raw": raw_t, "area_sqm": None, "price_egp": None, "status": "", "note": "", "ok": True}
     if not raw_t:
         return out
-    m = _UNIT.match(raw_t)
+    m = _UNIT.match(raw_t) or _UNIT.match(eg_text(raw_t))
     if m:
         out["area_sqm"], out["price_egp"] = to_number(m.group(1)), to_number(m.group(2))
         rest = m.group(3).strip()
@@ -114,14 +151,29 @@ def parse_payment_plan(raw):
         return out
     m = _PP.search(raw_t)
     if not m:
-        out["ok"] = False
-        return out
+        return _eg_payment_plan(raw_t, out)
     out["down_payment_pct"] = float(m.group(1).replace(",", "."))
     out["years"] = float(m.group(2).replace(",", "."))
     leftover = (raw_t[:m.start()] + raw_t[m.end():]).strip(" -<>")
     if leftover:
         out["ok"] = False  # e.g. '10% - 7Y Villa': readable, but carries extra meaning -> review
         out["note"] = leftover
+    return out
+
+
+def _eg_payment_plan(raw_t, out):
+    """'مقدم ١٠٪ على ٨ سنين' / '10% down payment over 8 years' / '8 سنوات 5% مقدم'."""
+    t = eg_text(raw_t).replace("٪", "%")
+    pct, yrs = _PCT.search(t), _YEARS.search(t)
+    if not (pct and yrs):
+        out["ok"] = False
+        return out
+    out["down_payment_pct"] = float((pct.group(1) or pct.group(2)).replace(",", "."))
+    out["years"] = float(yrs.group(1).replace(",", "."))
+    rest = _PP_FILLER.sub(" ", _YEARS.sub(" ", _PCT.sub(" ", t))).strip()
+    if rest:
+        out["ok"] = False
+        out["note"] = rest
     return out
 
 
@@ -139,7 +191,8 @@ def parse_commission(raw):
     out = {"raw": raw_t, "pct": None, "net": False, "ok": True}
     if not raw_t:
         return out
-    m = re.fullmatch(r"(\d+(?:[.,]\d+)?)\s*%?\s*(net)?", raw_t, re.I)
+    m = re.fullmatch(r"(\d+(?:[.,]\d+)?)\s*%?\s*(net)?", raw_t, re.I) or \
+        re.fullmatch(r"(\d+(?:[.,]\d+)?)\s*[%٪]?\s*(net|صافي|صافى)?", raw_t.translate(_EG_DIGITS).strip(), re.I)
     if not m:
         out["ok"] = False
         return out
@@ -173,7 +226,7 @@ def parse_rtm(raw):
         out.update(rtm_scope="some", rtm_area_sqm=to_number(m.group(1)), rtm_price_egp=to_number(m.group(2)))
         if out["rtm_price_egp"] < 10000:
             out["ok"] = False
-    elif m := _BEDS.match(raw_t):
+    elif m := (_BEDS.match(raw_t) or _BEDS.match(eg_beds(raw_t))):
         out.update(rtm_scope="some", rtm_bedrooms=int(m.group(1)), rtm_price_egp=to_number(m.group(2)))
     elif m := _RTM_PRICE.match(raw_t):
         out.update(rtm_scope="some", rtm_price_egp=to_number(m.group(1)))

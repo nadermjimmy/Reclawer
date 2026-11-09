@@ -1,0 +1,11 @@
+.brain .stats { margin-bottom: var(--space-4, 16px); }
+.brain .card { margin-bottom: var(--space-4, 16px); }
+.brain-grid { display: grid; gap: var(--space-4, 16px); grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr)); }
+.brain-dl { display: grid; gap: 8px; margin: 0; }
+.brain-dl > div { display: grid; grid-template-columns: 11rem 1fr; gap: 8px; align-items: baseline; }
+.brain-dl dd { margin: 0; overflow-wrap: anywhere; }
+.brain-note { margin-top: 8px; }
+.brain-list { margin: 0 0 12px; padding-left: 1.1rem; display: grid; gap: 4px; }
+.brain-rules h4 { margin: 12px 0 4px; font-size: inherit; }
+.brain-rules p { margin: 0; overflow-wrap: anywhere; }
+@media (max-width: 639px) { .brain-dl > div { grid-template-columns: 1fr; gap: 2px; } }

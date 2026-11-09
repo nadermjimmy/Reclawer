@@ -40,7 +40,7 @@ export interface Step {
 }
 
 export interface PipelineInfo {
-  counts: { groups: number; in_scope: number; messages: number; files: number; projects: number; units: number };
+  counts: { groups: number; in_scope: number; messages: number; files: number; suggestions: number };
   job: RunningJob | null;
 }
 

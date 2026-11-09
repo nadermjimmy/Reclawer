@@ -1,7 +1,7 @@
 """Read-only channel feed data: chats and messages as JSON for the app."""
 import os
-from fastapi import APIRouter, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi import APIRouter
+from fastapi.responses import JSONResponse
 import db, history, parse_files
 
 router = APIRouter()

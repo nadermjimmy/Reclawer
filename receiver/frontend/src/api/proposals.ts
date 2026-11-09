@@ -149,5 +149,15 @@ export const getProposal = (id: number) => get<ProposalDetail>(`/proposals/${id}
 export const reopen = (id: number) => post<{ ok: true }>(`/proposals/${id}/reopen`, {});
 export const BRAIN_CHANGED = "brain:changed";
 
-export const decide = (ids: number[], action: DecideAction, sheetById?: Record<number, string>) =>
-  post<DecideResult>("/proposals/decide", { ids, action, sheet_by_id: sheetById ?? {} });
+export type RejectReason = "wrong_project" | "wrong_value" | "not_an_offer" | "duplicate";
+export const REJECT_REASONS: { key: RejectReason; label: string }[] = [
+  { key: "wrong_project", label: "Wrong project" },
+  { key: "wrong_value", label: "Wrong value" },
+  { key: "not_an_offer", label: "Not an offer" },
+  { key: "duplicate", label: "Duplicate" },
+];
+
+export const decide = (ids: number[], action: DecideAction, sheetById?: Record<number, string>, reason?: RejectReason) =>
+  post<DecideResult>("/proposals/decide", { ids, action, sheet_by_id: sheetById ?? {}, reason });
+/** Why a person rejected these: the label the learning layer trains on. */
+export const setRejectReason = (ids: number[], reason: RejectReason) => post<{ updated: number }>("/proposals/reason", { ids, reason });

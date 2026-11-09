@@ -242,6 +242,12 @@ def download_media(log, retry_failed=False, jids=None):
                 failed += 1
             if i % 25 == 0 or i == len(futures):
                 log(f"downloaded {i}/{len(futures)} attachments")
+    if ok:
+        with db.connect() as c:  # parallel downloads: settle each file's name on its earliest post, once
+            c.execute("UPDATE source_files SET file_name=(SELECT o.file_name FROM file_occurrences o "
+                      "JOIN source_messages m ON m.wa_id=o.wa_id WHERE o.file_id=source_files.id "
+                      "AND o.file_name IS NOT NULL ORDER BY m.ts, m.wa_id LIMIT 1) "
+                      "WHERE id IN (SELECT file_id FROM file_occurrences GROUP BY file_id HAVING COUNT(*)>1)")
     log(f"Attachments: {ok} downloaded, {failed} unavailable (listed on the Sources page), "
         f"{skipped} video/audio skipped")
     return ok, failed

@@ -77,30 +77,6 @@ class FakeEvolution:
 
 
 def fake_llm(system, content, schema, max_tokens=16000, **kw):
-    if "map rows of real-estate availability" in system:
-        out = []
-        for ctx in json.loads(content)["contexts"]:
-            f, sheet, section = ctx["file_name"], ctx["sheet"], ctx["section_title"]
-            m = {"key": ctx["key"], "decision": "project", "developer": "", "project_name": "",
-                 "phase_label": "", "confidence": "high", "in_market": "yes", "rationale": f"file {f}"}
-            if f.startswith("Brabus"):
-                m.update(project_name="Brabus Island" if sheet == "Tower 1" else "Brabus Island Tower 2",
-                         phase_label="Tower 1" if sheet == "Tower 1" else "")
-            elif f.startswith("Hills"):
-                m.update(project_name="Dubai Hills")  # owner rule must reject this
-            elif f.startswith("Verdana"):
-                m.update(project_name="Verdana", phase_label=ctx["phase_cell"])
-            out.append(m)
-        return {"mappings": out}
-    if "extract factual statements" in system:
-        facts = []
-        for m in json.loads(content)["messages"]:
-            if "handover" in (m.get("text") or ""):
-                facts.append({"source_id": m["source_id"], "project_label": "Brabus Island", "phase_label": "",
-                              "fact_type": "handover", "raw_value": m["text"].split("handover ")[1],
-                              "parsed_value": m["text"].split("handover ")[1], "ambiguous": False,
-                              "updates_previous": False})
-        return {"facts": facts}
     raise AssertionError("unexpected prompt")
 
 
@@ -108,9 +84,9 @@ _done = False
 
 
 def run_pipeline():
-    """Run every pipeline step once against the fakes (shared by all test modules)."""
+    """Run the chat steps once against the fakes (shared by all test modules)."""
     global _done
-    import db, history, parse_files, mapping, facts, build, llm, evolution, jobs
+    import db, history, parse_files, llm, evolution, jobs
     fake = FakeEvolution()
     for name in ("fetch_groups", "find_chats", "find_messages", "media_base64"):
         setattr(evolution, name, getattr(fake, name))
@@ -122,8 +98,7 @@ def run_pipeline():
     with db.connect() as c:
         c.execute("UPDATE group_scope SET in_scope=1 WHERE jid=?", (UAE,))
         c.execute("UPDATE group_scope SET in_scope=0 WHERE jid=?", (EGY,))  # groups are read by default; untick one
-    for step in (history.pull_history, history.download_media, parse_files.parse_all, mapping.propose,
-                 facts.extract_all, build.rebuild):
+    for step in (history.pull_history, history.download_media, parse_files.parse_all):
         jobs.run_now(step.__name__, step)
     _done = True
     return db

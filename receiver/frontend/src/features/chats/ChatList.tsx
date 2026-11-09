@@ -1,7 +1,8 @@
 import { FileText, Image as ImageIcon, MessagesSquare, RefreshCw, SearchX, Users } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
-import { search as apiSearch, type Chat, type ChatFilter, type SearchResults } from "../../api/chats";
-import { Button, Chip, ConfirmDialog, EmptyState, ErrorBanner, Marked, SearchInput, Skeleton } from "../../components";
+import { bulkAssign, getAssignment, search as apiSearch, type Chat, type ChatFilter, type SearchResults } from "../../api/chats";
+import { errorText } from "../../api/client";
+import { Button, Chip, ConfirmDialog, EmptyState, ErrorBanner, Marked, SearchInput, Skeleton, useToast } from "../../components";
 import { fmtDate } from "../../lib/format";
 import { useDelayed } from "../../lib/hooks";
 import { initials, matchesAll, rangesIn, textDir, tokens } from "../../lib/text";
@@ -12,6 +13,7 @@ export const FILTERS: { key: ChatFilter; label: string }[] = [
   { key: "suggestions", label: "Has suggestions" },
   { key: "groups", label: "Groups" },
   { key: "private", label: "Private" },
+  { key: "unassigned", label: "Unassigned" },
 ];
 
 export function applyFilter(chats: Chat[], f: ChatFilter) {
@@ -19,6 +21,7 @@ export function applyFilter(chats: Chat[], f: ChatFilter) {
   if (f === "suggestions") return chats.filter((c) => c.open_suggestions > 0);
   if (f === "groups") return chats.filter((c) => c.kind === "group");
   if (f === "private") return chats.filter((c) => c.kind === "private");
+  if (f === "unassigned") return chats.filter((c) => c.kind === "group" && !c.assigned);
   return chats;
 }
 
@@ -40,14 +43,22 @@ export function shortTime(ts: number | null) {
   return d.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: d.getFullYear() === now.getFullYear() ? undefined : "2-digit" });
 }
 
-function ChatRow({ c, active, cursor, ranges, onOpen }: { c: Chat; active: boolean; cursor: boolean; ranges?: [number, number][]; onOpen: () => void }) {
+function ChatRow({ c, active, cursor, ranges, onOpen, selecting, selected, onSelect }: {
+  c: Chat; active: boolean; cursor: boolean; ranges?: [number, number][]; onOpen: () => void;
+  selecting?: boolean; selected?: boolean; onSelect?: (on: boolean) => void;
+}) {
   return (
-    <button type="button" className={`crow${active ? " is-active" : ""}${cursor ? " is-cursor" : ""}`} onClick={onOpen}
-      aria-current={active ? "page" : undefined} data-jid={c.jid}>
+    <button type="button" className={`crow${active ? " is-active" : ""}${cursor ? " is-cursor" : ""}${selected ? " is-selected" : ""}`}
+      onClick={selecting ? () => onSelect?.(!selected) : onOpen}
+      aria-current={active ? "page" : undefined} aria-pressed={selecting ? selected : undefined} data-jid={c.jid}>
+      {selecting && <input type="checkbox" className="crow-check" checked={Boolean(selected)} readOnly tabIndex={-1} aria-hidden="true" />}
       <Avatar name={c.name} kind={c.kind} />
       <span className="crow-body">
         <span className="crow-top">
           <span className="crow-name ellipsis" dir="auto">{ranges ? <Marked text={c.name} ranges={ranges} /> : c.name}</span>
+          {c.kind === "group" && (c.assigned
+            ? <span className="crow-dev caption ellipsis" dir="auto" title={`Developer: ${c.developer}`}>{c.developer}</span>
+            : <span className="crow-dev crow-dev-none caption" title="No developer assigned by the team yet">Unassigned</span>)}
           <span className="crow-time caption tnum">{shortTime(c.last_ts)}</span>
         </span>
         <span className="crow-bottom">
@@ -73,7 +84,7 @@ type Flat = { kind: "chat"; jid: string } | { kind: "message"; jid: string; wa_i
 /** Left pane: search (focus with "/"), filter chips and the chat list. With 2+ characters typed, the list shows
     grouped results (chats, then messages) from /api/search; Enter opens the chat at that message. */
 export function ChatList({ chats, loading, error, onRetry, activeJid, filter, onFilter, query, onQuery, onOpenChat, onOpenMessage, searchRef,
-  onSyncAll }: {
+  onSyncAll, onAssigned }: {
   chats: Chat[] | undefined;
   loading: boolean;
   error: string | null;
@@ -87,8 +98,35 @@ export function ChatList({ chats, loading, error, onRetry, activeJid, filter, on
   onOpenMessage: (jid: string, waId: string) => void;
   searchRef: RefObject<HTMLInputElement | null>;
   onSyncAll: (mode: "batch" | "live") => void;
+  onAssigned?: () => void;
 }) {
   const [syncAll, setSyncAll] = useState(false);
+  const [selecting, setSelecting] = useState(false);
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+  const [devs, setDevs] = useState<string[]>([]);
+  const [bulkDev, setBulkDev] = useState("");
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const toast = useToast();
+  useEffect(() => {
+    if (!selecting || devs.length) return;
+    const any = (chats ?? []).find((c) => c.kind === "group");
+    if (any) void getAssignment(any.jid).then((a) => setDevs(a.developers)).catch(() => undefined);
+  }, [selecting, chats, devs.length]);
+  const runBulk = async () => {
+    if (!picked.size || !devs.includes(bulkDev)) return;
+    setBulkBusy(true);
+    try {
+      const r = await bulkAssign([...picked], bulkDev);
+      toast.show({ message: `${r.assigned.length} ${r.assigned.length === 1 ? "group" : "groups"} assigned to ${bulkDev}` });
+      setPicked(new Set());
+      setSelecting(false);
+      onAssigned?.();
+    } catch (e) {
+      toast.show({ tone: "error", message: errorText(e, "Couldn't assign. Try again.") });
+    } finally {
+      setBulkBusy(false);
+    }
+  };
   const [mode, setMode] = useState<"batch" | "live">("batch");
   const toks = useMemo(() => tokens(query), [query]);
   const searching = query.trim().length >= 2 && toks.length > 0;
@@ -163,9 +201,24 @@ export function ChatList({ chats, loading, error, onRetry, activeJid, filter, on
               count={f.key === "all" ? undefined : applyFilter(all, f.key).length}>{f.label}</Chip>
           ))}
         </div>
-        <Button size="sm" variant="secondary" className="clist-syncall" onClick={() => setSyncAll(true)}>
-          <RefreshCw size={14} aria-hidden="true" /> Sync All Chats
-        </Button>
+        <div className="clist-actions">
+          <Button size="sm" variant="secondary" className="clist-syncall" onClick={() => setSyncAll(true)}>
+            <RefreshCw size={14} aria-hidden="true" /> Sync All Chats
+          </Button>
+          <Button size="sm" variant={selecting ? "primary" : "ghost"} onClick={() => { setSelecting((v) => !v); setPicked(new Set()); }}>
+            {selecting ? "Done" : "Assign Groups"}
+          </Button>
+        </div>
+        {selecting && (
+          <div className="bulk-assign">
+            <span className="caption muted">{picked.size ? `${picked.size} selected` : "Tick groups below"}</span>
+            <input className="input input-sm" list="bulk-devs" placeholder="Developer" value={bulkDev}
+              onChange={(e) => setBulkDev(e.target.value)} dir="auto" aria-label="Developer for the selected groups" />
+            <datalist id="bulk-devs">{devs.map((d) => <option key={d} value={d} />)}</datalist>
+            <Button size="sm" variant="primary" disabled={bulkBusy || !picked.size || !devs.includes(bulkDev)}
+              onClick={() => void runBulk()}>Assign</Button>
+          </div>
+        )}
       </div>
       <ConfirmDialog open={syncAll} title="Sync all chats" confirmLabel="Sync All Chats"
         onCancel={() => setSyncAll(false)} onConfirm={() => { setSyncAll(false); onSyncAll(mode); }}>
@@ -196,7 +249,9 @@ export function ChatList({ chats, loading, error, onRetry, activeJid, filter, on
         {searching && <div className="clist-group eyebrow">Chats</div>}
         {chatHits.map((c, i) => (
           <ChatRow key={c.jid} c={c} active={c.jid === activeJid} cursor={i === cursor} onOpen={() => onOpenChat(c.jid)}
-            ranges={searching ? rangesIn(c.name, toks) : undefined} />
+            ranges={searching ? rangesIn(c.name, toks) : undefined}
+            selecting={selecting && c.kind === "group"} selected={picked.has(c.jid)}
+            onSelect={(on) => setPicked((s) => { const n = new Set(s); if (on) n.add(c.jid); else n.delete(c.jid); return n; })} />
         ))}
         {searching && !chatHits.length && <p className="clist-note small muted">No chat names match.</p>}
         {searching && (
