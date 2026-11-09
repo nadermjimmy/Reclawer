@@ -135,6 +135,15 @@ CREATE TABLE IF NOT EXISTS chat_profiles(
     jid TEXT PRIMARY KEY, developer TEXT, shares TEXT, on_request_json TEXT, notes TEXT, source TEXT,
     updated_at INTEGER);
 
+-- ops-team assignment of a chat to its developer's projects (Phase 0). Keyed by normalized developer + project so
+-- it survives a master re-upload (profiles.relink_projects re-checks it on import).
+CREATE TABLE IF NOT EXISTS chat_projects(
+    jid TEXT NOT NULL, developer_key TEXT, project_key TEXT NOT NULL, project_label TEXT, sheet TEXT,
+    status TEXT DEFAULT 'ok', assigned_by TEXT, assigned_at INTEGER, PRIMARY KEY(jid, project_key));
+-- every team change to a chat's developer / projects: the learning label (append-only)
+CREATE TABLE IF NOT EXISTS assignment_log(
+    id INTEGER PRIMARY KEY, jid TEXT, field TEXT, old TEXT, new TEXT, by TEXT, at INTEGER);
+
 CREATE TABLE IF NOT EXISTS jobs(
     id INTEGER PRIMARY KEY, name TEXT, status TEXT, started_at INTEGER, finished_at INTEGER, log TEXT);
 """
@@ -155,6 +164,10 @@ def init():
         import search
         search.ensure(c)  # FTS5 message index (created once, then caught up with any unindexed rows)
         c.execute("UPDATE jobs SET status='interrupted' WHERE status='running'")  # container restarted mid-job
+        pcols = {r[1] for r in c.execute("PRAGMA table_info(chat_profiles)")}
+        for col in ("assigned_by TEXT", "assigned_at INTEGER"):
+            if col.split()[0] not in pcols:
+                c.execute(f"ALTER TABLE chat_profiles ADD COLUMN {col}")
         cols = {r[1] for r in c.execute("PRAGMA table_info(proposals)")}
         if "decided_by" not in cols:  # 'brain' when the brain approved or rejected it, else a person
             c.execute("ALTER TABLE proposals ADD COLUMN decided_by TEXT")

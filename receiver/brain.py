@@ -99,7 +99,7 @@ class Rows:
         return s
 
     def candidates(self, project, developer, chat_jid, current_row_id, limit=8, chat_limit=6, dev_limit=15,
-                   chat_developer=""):
+                   chat_developer="", assigned=()):
         key, toks, dev_key = cp.normalize_project_key(project), _tokens(project), cp.normalize_project_key(developer)
         scored = sorted(((self.score(key, toks, dev_key, r), r["id"]) for r in self.rows), reverse=True)
         ids = [rid for s, rid in scored[:limit] if s >= 0.3]
@@ -110,6 +110,9 @@ class Rows:
         for rid in self.chat_rows.get(chat_jid, [])[:chat_limit]:  # rows this chat has updated before
             if rid not in ids:
                 ids.append(rid)
+        if assigned:  # the team's assignment for this group comes first
+            ours = [rid for s, rid in scored if self.by_id[rid]["project_key"] in assigned]
+            ids = ours + [i for i in ids if i not in ours]
         if current_row_id and current_row_id in self.by_id and current_row_id not in ids:
             ids.insert(0, current_row_id)
         return [self.by_id[i] for i in ids]
@@ -122,12 +125,16 @@ def _price(parsed, field):
     return parsed.get("price_egp")
 
 
-def safe_to_approve(c, p, confidence):
-    """Owner's auto-approve rules. Returns (ok, why_not)."""
+def safe_to_approve(c, p, confidence, assigned=()):
+    """Owner's auto-approve rules. Returns (ok, why_not). `assigned`: the group's team-assigned project keys."""
     if confidence != "high":
         return False, "not certain enough"
     if p["row_id"] is None:
         return False, "new rows always need a person"
+    if assigned:
+        row = c.execute("SELECT project_key FROM master_rows WHERE id=?", (p["row_id"],)).fetchone()
+        if not row or row["project_key"] not in assigned:
+            return False, "outside this group's assigned projects"
     if p["field"] not in AUTO_FIELDS:
         return False, f"{p['field'].replace('_', ' ')} changes always need a person"
     new = json.loads(p["new_parsed_json"] or "{}")
@@ -193,8 +200,9 @@ def _open_suggestions(c, jids, redo=False):
 def _group_payload(c, rows, key, items):
     first = items[0]
     prof = profiles.get(c, first["chat_jid"]) if first["chat_jid"] else None
+    assigned = profiles.assigned_keys(c, first["chat_jid"])
     cands = rows.candidates(first["project"], first["developer"], first["chat_jid"], first["row_id"],
-                            chat_developer=prof["developer"] if prof else "")
+                            chat_developer=prof["developer"] if prof else "", assigned=assigned)
     fields = sorted({p["field"] for p in items})
     return {
         "group_id": key,
@@ -207,7 +215,7 @@ def _group_payload(c, rows, key, items):
         "candidates": [{"row_id": r["id"], "sheet": master.home_sheet(r), "developer": r["developer"] or "",
                         "project": r["project"], "location": r["location_code"] or "",
                         "current_values": {f: master.current(c, r["id"], f)[0] for f in fields}} for r in cands],
-    }, {r["id"] for r in cands}
+    }, ({r["id"] for r in cands}, assigned)
 
 
 def review(log, jids=None, redo=False):
@@ -253,7 +261,8 @@ def review(log, jids=None, redo=False):
     return totals
 
 
-def _apply(d, allowed_rows, totals, log):
+def _apply(d, allowed, totals, log):
+    allowed_rows, assigned = allowed
     pid = d["proposal_id"]
     with db.connect() as c:
         p = c.execute("SELECT * FROM proposals WHERE id=? AND state='proposed'", (pid,)).fetchone()
@@ -278,7 +287,7 @@ def _apply(d, allowed_rows, totals, log):
             else:
                 reject, why = False, ""
             if not reject:
-                ok, why_not = safe_to_approve(c, p, conf)
+                ok, why_not = safe_to_approve(c, p, conf, assigned)
                 _record(c, pid, dict(d, reason=d["reason"] if ok else f"{d['reason']} (left for you: {why_not})"),
                         "approved" if ok else "kept")
                 action = "approve" if ok else None

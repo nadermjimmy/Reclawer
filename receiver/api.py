@@ -235,10 +235,15 @@ def sheet_view(sheet: str = "", view: str = "all", q: str = "", offset: int = 0,
                     "brain_reason": p["brain_reason"], "brain_verdict": p["brain_verdict"],
                     "warning": p["warning"] or "", "count": count, "row_new": p["row_id"] is None}
 
+        feeds = {}  # project -> groups the team assigned to it (same developer)
+        for f in c.execute("SELECT cp.project_key, cp.developer_key, g.name FROM chat_projects cp "
+                           "LEFT JOIN groups g ON g.jid=cp.jid WHERE cp.status='ok'"):
+            feeds.setdefault(f["project_key"], []).append((f["developer_key"], f["name"] or ""))
         out_rows = []
         for r in all_rows:
             row = {"row_id": r["id"], "row_number": r["row_number"], "state": r["state"], "cells": {}, "changes": 0,
-                   "pending": 0}
+                   "pending": 0, "groups": [n for dk, n in feeds.get(r["project_key"], [])
+                                            if not dk or master.same_developer(dk, r)]}
             for f, _ in cols:
                 master_raw = r[f] if f in ("developer", "project") else cells.get((r["id"], f), "")
                 cell = {"master": master_raw or ""}
@@ -306,8 +311,56 @@ async def save_chat_profile(jid: str, request: Request):
     with db.connect() as c:
         if not c.execute("SELECT 1 FROM groups WHERE jid=?", (jid,)).fetchone():
             return err("unknown_chat", 404)
-        return {"profile": profiles.put(c, jid, d.get("developer", ""), d.get("shares", ""), d.get("on_request") or [],
+        return {"profile": profiles.put(c, jid, d.get("developer"), d.get("shares", ""), d.get("on_request") or [],
                                          d.get("notes", ""))}
+
+
+# ---------- team assignment: chat -> developer + projects (Phase 0) ----------
+@router.get("/chats/{jid}/assignment")
+def chat_assignment(jid: str, developer: str = ""):
+    """Developer dropdown options (the master's developers) and the chosen developer's projects."""
+    with db.connect() as c:
+        prof = profiles.get(c, jid)
+        dev = developer or (prof["developer"] if prof else "")
+        return {"profile": prof, "developers": profiles.master_developers(c),
+                "projects": profiles.developer_projects(c, dev) if dev else [],
+                "assigned": profiles.assigned_projects(c, jid),
+                "suggested": prof["developer"] if prof and prof["source"] == "auto" else ""}
+
+
+@router.put("/chats/{jid}/assignment")
+async def save_chat_assignment(jid: str, request: Request):
+    """{developer, project_keys?: [..], new_developer?: bool}."""
+    d = await body_of(request)
+    with db.connect() as c:
+        if not c.execute("SELECT 1 FROM groups WHERE jid=?", (jid,)).fetchone():
+            return err("unknown_chat", 404)
+        try:
+            prof = profiles.assign(c, jid, d.get("developer", ""), d.get("project_keys"),
+                                   allow_new=bool(d.get("new_developer")))
+        except ValueError as e:
+            return err("bad_assignment", 422, str(e))
+        return {"profile": prof, "assigned": profiles.assigned_projects(c, jid)}
+
+
+@router.post("/chats/assign")
+async def bulk_assign(request: Request):
+    """{jids: [..], developer}: assign one developer to many groups (projects are set per chat)."""
+    d = await body_of(request)
+    jids = [j for j in d.get("jids") or [] if isinstance(j, str)]
+    if not jids:
+        return err("bad_request", 422, "Send jids")
+    done = []
+    with db.connect() as c:
+        for j in jids:
+            if not c.execute("SELECT 1 FROM groups WHERE jid=?", (j,)).fetchone():
+                continue
+            try:
+                profiles.assign(c, j, d.get("developer", ""))
+            except ValueError as e:
+                return err("bad_assignment", 422, str(e))
+            done.append(j)
+    return {"assigned": done}
 
 
 @router.post("/proposals/{pid}/reopen")
@@ -723,9 +776,17 @@ def list_chats(filter: str = "all", q: str = "", scope: str = "", has_suggestion
             item["preview"], item["media_preview"], item["preview_sender"] = _preview(c, item["jid"]) if item["count"] \
                 else ("", False, None)
         profs = profiles.for_chats(c, [i["jid"] for i in out])
+        nproj = {r[0]: r[1] for r in c.execute("SELECT jid, COUNT(*) FROM chat_projects WHERE status='ok' GROUP BY jid")}
         for item in out:
-            item["developer"] = profs[item["jid"]]["developer"] if item["jid"] in profs else ""
-        counts = {"all": len(jids), "inventory": len(scoped & jids), "suggestions": len(set(opened) & jids)}
+            pr = profs.get(item["jid"])
+            item["developer"] = pr["developer"] if pr else ""
+            item["assigned"] = bool(pr and pr["source"] == "team" and pr["developer"])  # set by the team, not guessed
+            item["assigned_projects"] = nproj.get(item["jid"], 0)
+        unassigned = [i for i in out if i["kind"] == "group" and not i["assigned"]]
+        if filter == "unassigned":
+            out = unassigned
+        counts = {"all": len(jids), "inventory": len(scoped & jids), "suggestions": len(set(opened) & jids),
+                  "unassigned": len(unassigned)}
     return {"chats": out, "counts": counts}
 
 

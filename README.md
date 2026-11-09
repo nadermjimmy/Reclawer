@@ -153,3 +153,14 @@ API: `GET /api/sheet?sheet=&view=all|changed|pending|approved&q=`.
 - **Rounding**: suggested prices round up to the next 50,000 from 1,000,000 EGP, otherwise to the next 1,000.
 - **Insights > Data Missing**: developers whose group is active but whose price rows had no change for 14 days,
   with the sales rep from Sheet 2 (WhatsApp link) and a ready-to-send message.
+
+## Group assignment by the ops team (Phase 0)
+
+Above each group chat: **Developer** (a dropdown of the master's developers; "Suggested" when it was only read from the
+chat name; "Not on the sheet yet" for a new one) and **Projects** (that developer's projects on the master). The chat
+list shows each group's developer or **Unassigned**, has an Unassigned filter and **Assign Groups** for bulk.
+Every ingestion from the group uses it: extraction prompts name the assigned projects, matching tries them first,
+and a match outside them is only a near match (warning "Outside this group's assigned projects") that the brain
+never auto-approves. Assignments are keyed by normalized developer + project, re-checked on every master upload
+(`profiles.relink_projects`; missing ones are flagged, not dropped), and every change is logged in
+`assignment_log` as a team label. Groups the team hasn't assigned behave as before.

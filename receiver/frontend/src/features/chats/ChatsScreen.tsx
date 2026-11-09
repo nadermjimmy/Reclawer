@@ -15,6 +15,7 @@ import { useHotkeys, useLoad, useMediaQuery } from "../../lib/hooks";
 import { drawer as drawerMotion } from "../../motion";
 import { Avatar, ChatList } from "./ChatList";
 import { useJobs } from "../../app/jobs";
+import { CHATS_CHANGED } from "./AssignmentBar";
 import { Conversation, type ConversationHandle } from "./Conversation";
 import { SuggestionsPanel, useChatSuggestions } from "./SuggestionsPanel";
 import { useChatSync } from "./useChatSync";
@@ -40,6 +41,11 @@ function readPanelPref() {
     slide-over. Phone: list → conversation → suggestions push, like WhatsApp mobile. */
 export function ChatsScreen() {
   const { startStep } = useJobs();
+  useEffect(() => {  // an assignment changed in the chat header: refresh the list's developer tags
+    const on = () => void chats.reload();
+    window.addEventListener(CHATS_CHANGED, on);
+    return () => window.removeEventListener(CHATS_CHANGED, on);
+  });
   const { jid: jidParam } = useParams();
   const jid = jidParam ?? null;
   const [params, setParams] = useSearchParams();
@@ -225,7 +231,7 @@ export function ChatsScreen() {
     <ChatList chats={chats.data?.chats} loading={chats.loading} error={chats.error} onRetry={() => void chats.reload()}
       activeJid={jid} filter={filter} onFilter={setFilter} query={query} onQuery={setQuery}
       onOpenChat={openChat} onOpenMessage={openMessage} searchRef={searchRef}
-      onSyncAll={(mode) => void startStep("chat_routine", { body: { mode } })} />
+      onSyncAll={(mode) => void startStep("chat_routine", { body: { mode } })} onAssigned={() => void chats.reload()} />
   );
   const openCount = sugg.open;
   const panelBody = chat && (

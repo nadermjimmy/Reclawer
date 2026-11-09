@@ -6,7 +6,7 @@ master cell.
 """
 import datetime, difflib, hashlib, io, json, os, time
 import openpyxl
-import cell_parse as cp, db, master_schema as ms
+import cell_parse as cp, db, master_schema as ms, profiles
 
 USABLE = ("active", "moved", "new")  # row states that ingestion may match and update
 
@@ -62,6 +62,7 @@ def import_workbook(data, file_name):
                               (rid, f, cp.text(v), json.dumps(ms.parse(f, v), ensure_ascii=False)))
             summary["sheets"][sheet] = n
         _location_checks(c, imp, summary)
+        summary["assignments_missing"] = profiles.relink_projects(c)  # team assignments, re-checked by name
         c.execute("UPDATE master_imports SET summary_json=? WHERE id=?", (json.dumps(summary), imp))
     return summary
 
@@ -151,7 +152,20 @@ def same_developer(dev_key, row):
     return bool(dev_key and rk and len(dev_key) >= 3 and (dev_key in rk or rk in dev_key))
 
 
-def match(c, project, developer, sheets):
+def _loose(key, cands, floor=0.6):
+    """Best row among cands by name, allowing prefix/containment ('Arc' -> 'Arc Of Soma')."""
+    best, score = None, 0.0
+    for r in cands:
+        pk = r["project_key"]
+        s = difflib.SequenceMatcher(None, key, pk).ratio()
+        if len(key) >= 3 and len(pk) >= 3 and (pk.startswith(key) or key.startswith(pk) or key in pk or pk in key):
+            s = max(s, 0.8)
+        if s > score:
+            best, score = r, s
+    return best if best is not None and score >= floor else None
+
+
+def match(c, project, developer, sheets, assigned=None):
     """{sheet: (row, match_state, label)} for the best row per sheet. match_state: exact / alias / near.
     When the developer is known (from the message or the chat's developer profile) that developer's rows are tried
     first, with a looser name match ('Arc' -> 'Arc Of Soma'); another developer's same-named project only counts
@@ -169,6 +183,20 @@ def match(c, project, developer, sheets):
         cands = [r for r in rows if home_sheet(r) == sheet]
         mine = [r for r in cands if same_developer(dev_key, r)]
         hit = None
+        ours = [r for r in cands if assigned and r["project_key"] in assigned]  # the team's assignment first
+        if ours:
+            for state, keyset in (("exact", {key}), ("alias", {alias[0]} if alias else set())):
+                hits = [r for r in ours if r["project_key"] in keyset]
+                if hits:
+                    hit = (hits[0], state)
+                    break
+            if not hit:
+                best = _loose(key, ours)
+                if best is not None:
+                    hit = (best, "near")
+            if hit:
+                out[sheet] = (hit[0], hit[1], hit[0]["project"])
+                continue
         for state, keyset in (("exact", {key}), ("alias", {alias[0]} if alias else set())):
             hits = [r for r in mine if r["project_key"] in keyset]
             if hits:
@@ -214,6 +242,8 @@ def _sheets_for(field):
     return [s for s, k in ms.SHEETS.items() if k in kinds]
 
 
+OUTSIDE_ASSIGNMENT = "Outside this group's assigned projects"
+
 # reading order (owner decision): text messages first, then spreadsheets, PDFs, images. A later source only fills a
 # cell that no earlier source filled recently: the cell is empty, or nothing better updated it in the last 14 days.
 SOURCE_RANK = {"message": 0, "row": 1, "pdf_page": 2, "image": 3}
@@ -250,7 +280,8 @@ def add_proposal(c, item):
     project, key = item["project"].strip(), cp.normalize_project_key(item["project"])
     loc = (item.get("location_code") or "").strip().lower()
     sheets = _sheets_for(field)
-    hits = match(c, project, item.get("developer", ""), sheets)
+    assigned = profiles.assigned_keys(c, item.get("chat_jid"))
+    hits = match(c, project, item.get("developer", ""), sheets, assigned)
     written = 0
     targets = []
     for sheet, (row, state, label) in hits.items():
@@ -276,6 +307,9 @@ def add_proposal(c, item):
             if (row["kind"] == ms.COMMISSION and current(c, row["id"], "date")[1].get("row_status")
                     and not approval_date(c, row["id"])):
                 warn.append("Approving writes today's date and lifts Hold/Hide on Sheet 2")
+        if assigned and row is not None and row["project_key"] not in assigned:
+            state = "near"  # outside the team's assignment for this group: a person (or the brain) confirms it
+            warn.append(OUTSIDE_ASSIGNMENT)
         if state == "near":
             warn.append(f"Near match: chat says '{project}', sheet has '{label}'")
         if state == "new" and not sheet:

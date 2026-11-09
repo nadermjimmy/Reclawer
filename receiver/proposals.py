@@ -120,7 +120,7 @@ def _chat_context(c, file_id, around=4):
                      (m["group_jid"], m["ts"], around, m["group_jid"], m["ts"], around)).fetchall()
     return {"caption": (m["text"] or "")[:500], "nearby": [(n[0] or "")[:300] for n in near],
             "chat": g[0] if g else m["group_jid"], "chat_profile": profiles.describe(prof),
-            "developer": prof["developer"] if prof else ""}
+            "developer": prof["developer"] if prof else "", "jid": m["group_jid"]}
 
 
 def text_units(c, jids=None, skip=None, batch=60):
@@ -149,7 +149,7 @@ def text_units(c, jids=None, skip=None, batch=60):
             out.append(_unit(f"t{chunk[0]['wa_id']}"[:60], "text",
                              f"{names.get(jid, jid)}: messages {i + 1}-{i + len(chunk)}", llm.MODEL,
                              json.dumps(body, ensure_ascii=False),
-                             {m["wa_id"]: ["message", m["wa_id"], m["ts"], dev] for m in chunk},
+                             {m["wa_id"]: ["message", m["wa_id"], m["ts"], dev, jid] for m in chunk},
                              ["u:" + m["wa_id"] for m in chunk]))
     return out
 
@@ -177,7 +177,7 @@ def sheet_units(c, jids=None, skip=None, chunk_rows=150):
                     "chat_profile": ctx["chat_profile"], "rows": lines}
             out.append(_unit(f"s{part[0]['id']}", "sheets", f"{part[0]['file_name']} / {sheet}", llm.MODEL,
                              json.dumps(body, ensure_ascii=False) if lines else None,
-                             {str(r["id"]): ["row", str(r["id"]), ts, ctx.get("developer", "")] for r in part},
+                             {str(r["id"]): ["row", str(r["id"]), ts, ctx.get("developer", ""), ctx.get("jid")] for r in part},
                              ["ur:%d" % r["id"] for r in part]))
     return out
 
@@ -241,7 +241,7 @@ def pdf_units(c, jids=None, skip=None):
                                                        "data": base64.standard_b64encode(data).decode()}},
                        {"type": "text", "text": note}]
             out.append(_unit(f"p{f['id']}_{a}", "pdfs", f"{f['file_name']} p{a}-{b}", llm.FILE_MODEL, content,
-                             {f"p{n}": ["pdf_page", str(pages[n]), ts, ctx.get("developer", "")] for n in range(a, b + 1) if n in pages},
+                             {f"p{n}": ["pdf_page", str(pages[n]), ts, ctx.get("developer", ""), ctx.get("jid")] for n in range(a, b + 1) if n in pages},
                              [key]))
     return out
 
@@ -264,7 +264,7 @@ def image_units(c, jids=None, skip=None):
                                                 "data": base64.standard_b64encode(open(r["path"], "rb").read()).decode()}},
                    {"type": "text", "text": note}]
         out.append(_unit(f"i{r['id']}", "images", r["file_name"] or f"image {r['id']}", llm.FILE_MODEL, content,
-                         {"img": ["image", str(r["rid"]), _file_ts(c, r["id"]), ctx.get("developer", "")]}, [key]))
+                         {"img": ["image", str(r["rid"]), _file_ts(c, r["id"]), ctx.get("developer", ""), ctx.get("jid")]}, [key]))
     return out
 
 
@@ -287,12 +287,13 @@ def _store(unit_sources, updates):
                 continue
             kind, ref, ts = src[:3]
             dev = src[3] if len(src) > 3 else ""
+            jid = src[4] if len(src) > 4 else None
             if dev:
                 if not u.get("developer"):
                     u = dict(u, developer=dev)  # the chat's developer (profile) when the message doesn't say
                 if _is_developer_not_project(c, u["project"], dev):
                     continue  # "Soma Bay" in Soma Bay's own group is the developer/place, not a project
-            n += master.add_proposal(c, dict(u, source_kind=kind, source_ref=ref, source_ts=ts))
+            n += master.add_proposal(c, dict(u, source_kind=kind, source_ref=ref, source_ts=ts, chat_jid=jid))
     return n
 
 
