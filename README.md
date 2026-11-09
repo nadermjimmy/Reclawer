@@ -22,51 +22,28 @@ WhatsApp groups -> Evolution API (Railway, public) -> receiver (Railway, private
 6. **Test**: send a message in a group; receiver logs should show `POST /webhook/... 200`.
    Digest: `railway ssh --service receiver python digest.py`
 
-## Inventory web app
+## Web app
 
-The receiver also serves a password-protected web app at `/app` (the root URL opens it; old page links redirect into it) that turns the chosen chats' history and attachments
-into a project -> phase/building -> unit inventory with full source tracing. Code: `receiver/` (`web.py`,
-`history.py`, `parse_files.py`, `mapping.py`, `facts.py`, `media_review.py`, `build.py`).
+The receiver serves a password-protected web app at `/app` (the root URL opens it). Navigation, in order:
+**Chats**, **Insights**, **Sheet** (the master as a Google-Sheets-like grid with approvals and open suggestions),
+**Updates** (the review queue), then **Master** and More (**Pipeline**, **Sources**, **Brain**). Code: `receiver/`
+(API in `api.py`, React app in `receiver/frontend/`).
 
 **Setup (once):** on the `receiver` service add variables `APP_PASSWORD`, `EVOLUTION_URL` (the Evolution
 https domain), `EVOLUTION_API_KEY` (Evolution's `AUTHENTICATION_API_KEY`), `EVOLUTION_INSTANCE` (the instance
-whose chats feed the app; webhooks from any other instance are ignored) and `MARKET` (`eg` - default - or
-`uae`), then Settings -> Networking -> Generate Domain and open it. **Start over** on the dashboard deletes all
-app data (type `DELETE ALL`); WhatsApp and Evolution are not touched.
+whose chats feed the app; webhooks from any other instance are ignored) and `MARKET` (`eg`, the default), then
+Settings -> Networking -> Generate Domain and open it. **Start over** on Pipeline deletes all app data (type
+`DELETE ALL`); WhatsApp and Evolution are not touched.
 
-**Pipeline** (Dashboard, run in order; each step only processes what's new):
-1. Sync chats (groups and private chats) -> tick the inventory chat(s) on **Chats**.
-2. Pull history for the ticked chats (from Evolution's database).
-3. Download attachments (ticked chats; WhatsApp may no longer have old media - listed on **Sources**).
-4. Read files: every workbook/CSV cell and PDF page stored verbatim (`source_rows`), header + column roles
-   detected per sheet (fixable on the review page).
-5. Map projects (Claude): proposes parent project / phase per table using only the file and its chat context.
-6. Extract facts (Claude): location, service charge, payment plan, completion, amenities, handover,
-   phase/unit status - each with its source message or PDF page.
-7. Review images (Claude): proposals only; nothing is shown on a project until approved.
-8. Build inventory: deterministic rebuild of projects/phases/units/snapshots and the review queue.
+**Pipeline:** **Sync all chats** lists chats, pulls history, reads text first, then downloads and reads attachments
+(every workbook/CSV cell and PDF page stored verbatim in `source_rows`) and proposes sheet updates. On their own:
+Propose sheet updates, Brain review, Eval, Retrain, Re-read skipped messages, Rule suggestions.
 
-**Rules this app enforces**
-- No web data: Claude only sees the group's own messages and files.
-- Source values are never changed: unit codes, listed prices and areas are stored as text exactly as in the
-  cell; parsed numbers and price per sq ft are separate, labelled derived fields (with formula + inputs).
-  Price per sq ft is only calculated when the price is a plain number, a currency is stated and the area
-  unit (sq ft / sq m, 1 sq m = 10.7639104167 sq ft) is stated. Arabic column headers are recognised.
-- Owner corrections live in `receiver/owner_rules_<market>.json` (`eg` / `uae`): market name, currency,
-  price-per-area metric (sq m for Egypt, sq ft for UAE), not-a-project names, locations, one-parent groups
-  (UAE: Brabus, Verdana), phase limits, image blocklist. Edit and rebuild.
-- Only high-confidence in-market proposals are used before approval; everything else stays in the review queue and
-  still counts in **Reconciliation** (mapped + queued + excluded = rows in sources).
-- Unit status and phase status are stored separately; conflicts are flagged, not resolved silently.
-- Missing project facts show "Not supplied"; conflicting statements show "Conflict" with every source.
+The old project/unit inventory (map projects, extract facts, review images, build inventory, and the Inventory,
+Review and Reconciliation screens) was removed; its tables are left untouched in existing databases.
 
-**Feed** (`/feed`): every chat shown as a read-only WhatsApp-style channel - text with WhatsApp formatting,
-images, and spreadsheets/PDFs that open in a built-in viewer (sheet tabs, row filter, exact cell values).
-Attachments not downloaded yet are fetched from Evolution as you scroll to them; the feed refreshes every 15 s.
-
-**New app (`/app`):** a React rebuild of the admin pages (Updates, Master, More > Pipeline / Inventory /
-Review / Sources; Chats and Insights coming next), on the JSON API in `receiver/api.py` (`/api/*`, same login).
-Source and dev notes: `receiver/frontend/README.md`. The Docker image builds it; the classic pages keep working.
+**Feed** (`/feed`): every chat shown as a read-only WhatsApp-style channel, with a built-in viewer for
+spreadsheets and PDFs.
 
 **Tests:** `cd receiver && pip install -r requirements.txt pytest && python -m pytest tests`
 

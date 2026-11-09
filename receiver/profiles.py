@@ -10,7 +10,7 @@ Extraction, matching and the brain use the profile so a developer's projects sta
 developer name that is also a place (Soma Bay) isn't read as a project or a location.
 """
 import difflib, json, re, time
-import cell_parse as cp, db, master_schema as ms
+import cell_parse as cp, master_schema as ms
 
 NAME_PATTERN = re.compile(r"^\s*(.+?)\s*(?:&|-|\||x|×|\+|with)\s*by\s*it\b", re.I)
 

@@ -535,7 +535,7 @@ def _advance(run_id):
                           (cid, run_id, batch_id, stage, u["label"], json.dumps(u["sources"]), json.dumps(u["keys"]),
                            json.dumps(u.get("cache"))))
             _set_run(c, run_id, batch_id=batch_id, status="waiting")
-        log(f"PROGRESS " + json.dumps({"stage": run["stage"] + 1, "of": len(STAGES), "label": label,
+        log("PROGRESS " + json.dumps({"stage": run["stage"] + 1, "of": len(STAGES), "label": label,
                                        "done": run["stage"], "total": len(STAGES)}))
         log(f"{label}: sent {len(picked)} request(s) to the batch queue ({batch_id}); results usually within an hour")
         return

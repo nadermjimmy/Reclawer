@@ -1,4 +1,4 @@
-"""SQLite schema for the bridge. Source tables are append-only; inventory tables are rebuilt by build.py."""
+"""SQLite schema for the bridge. Source tables are append-only."""
 import os, sqlite3
 
 DB = os.getenv("DB_PATH", "/data/messages.db")
@@ -41,52 +41,10 @@ CREATE TABLE IF NOT EXISTS sheet_layouts(
     file_id INTEGER NOT NULL, sheet TEXT NOT NULL, header_row INTEGER, columns_json TEXT,
     source TEXT DEFAULT 'auto', PRIMARY KEY(file_id, sheet));
 
--- interpretation decisions (kept across rebuilds)
-CREATE TABLE IF NOT EXISTS label_contexts(
-    key TEXT PRIMARY KEY, file_id INTEGER, sheet TEXT, section_label TEXT, raw_project TEXT,
-    raw_phase TEXT, evidence_json TEXT, row_count INTEGER);
-CREATE TABLE IF NOT EXISTS label_mappings(
-    context_key TEXT PRIMARY KEY, decision TEXT, developer TEXT, project_name TEXT, phase_label TEXT,
-    confidence TEXT, rationale TEXT, is_uae TEXT, source TEXT, review_state TEXT DEFAULT 'proposed',
-    updated_at INTEGER);
-CREATE TABLE IF NOT EXISTS fact_assertions(
-    id INTEGER PRIMARY KEY, raw_project_label TEXT, phase_label TEXT, fact_type TEXT, raw_value TEXT,
-    parsed_value TEXT, excerpt TEXT, source_kind TEXT, source_ref TEXT, observed_ts INTEGER,
-    validation_status TEXT, updates_previous INTEGER DEFAULT 0, reviewer_note TEXT,
-    UNIQUE(source_kind, source_ref, fact_type, raw_project_label, phase_label, raw_value));
+-- request keys already read by Claude (proposals.py)
 CREATE TABLE IF NOT EXISTS processed_batches(batch_key TEXT PRIMARY KEY, processed_at INTEGER);
-CREATE TABLE IF NOT EXISTS media_assignments(
-    file_id INTEGER PRIMARY KEY, classification TEXT, project_name TEXT, phase_label TEXT,
-    unit_code TEXT, rationale TEXT, confidence TEXT, review_state TEXT DEFAULT 'proposed',
-    excluded_reason TEXT, updated_at INTEGER);
-
--- derived inventory (rebuilt from the tables above)
-CREATE TABLE IF NOT EXISTS developers(id INTEGER PRIMARY KEY, name TEXT UNIQUE);
-CREATE TABLE IF NOT EXISTS projects(
-    id INTEGER PRIMARY KEY, slug TEXT UNIQUE, name TEXT UNIQUE, developer_id INTEGER);
-CREATE TABLE IF NOT EXISTS project_aliases(
-    id INTEGER PRIMARY KEY, project_id INTEGER, raw_label TEXT, alias_type TEXT, context_key TEXT,
-    rationale TEXT, confidence TEXT, review_state TEXT);
-CREATE TABLE IF NOT EXISTS project_phases(
-    id INTEGER PRIMARY KEY, project_id INTEGER NOT NULL, raw_label TEXT NOT NULL, display_label TEXT,
-    UNIQUE(project_id, raw_label));
-CREATE TABLE IF NOT EXISTS units(
-    id INTEGER PRIMARY KEY, project_id INTEGER NOT NULL, phase_key TEXT NOT NULL DEFAULT '',
-    phase_id INTEGER, unit_code TEXT NOT NULL, UNIQUE(project_id, phase_key, unit_code));
-CREATE TABLE IF NOT EXISTS unit_snapshots(
-    id INTEGER PRIMARY KEY, source_row_id INTEGER UNIQUE NOT NULL, unit_id INTEGER, context_key TEXT,
-    snapshot_ts INTEGER, unit_code_raw TEXT, unit_type_raw TEXT, floor_raw TEXT, view_raw TEXT,
-    price_raw TEXT, price_value REAL, currency TEXT, areas_json TEXT, status_raw TEXT,
-    unit_status TEXT, restriction_raw TEXT, notes_raw TEXT, price_per_sqft REAL, ppsf_inputs TEXT,
-    mapping_state TEXT, extra_json TEXT);
-CREATE INDEX IF NOT EXISTS ix_us_unit ON unit_snapshots(unit_id);
-CREATE TABLE IF NOT EXISTS fact_links(fact_id INTEGER PRIMARY KEY, project_id INTEGER);
-CREATE TABLE IF NOT EXISTS review_issues(
-    id INTEGER PRIMARY KEY, issue_type TEXT, severity TEXT, ref_kind TEXT, ref_id TEXT,
-    reason TEXT, detail_json TEXT);
 
 -- master 'App Updates' workbook (uploaded by the owner) and the cell-level updates proposed from chats.
--- Not touched by build.rebuild.
 CREATE TABLE IF NOT EXISTS master_imports(
     id INTEGER PRIMARY KEY, file_name TEXT, sha256 TEXT, path TEXT, imported_at INTEGER, summary_json TEXT);
 CREATE TABLE IF NOT EXISTS master_sheets(

@@ -252,7 +252,6 @@ def match_legacy(c, project, developer, sheets, assigned=None, alias_before=None
     q = (f"SELECT * FROM master_rows WHERE state IN ({','.join('?' * len(USABLE))})")
     rows = [r for r in c.execute(q, USABLE).fetchall() if home_sheet(r) in sheets
             and not (alias_before and r["state"] == "new" and (r["created_at"] or 0) >= alias_before)]
-    keys = {key} | ({alias[0]} if alias else set())
     out = {}
     for sheet in sheets:
         cands = [r for r in rows if home_sheet(r) == sheet]

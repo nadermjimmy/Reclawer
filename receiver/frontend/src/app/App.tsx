@@ -1,7 +1,6 @@
 import { MotionConfig } from "framer-motion";
 import { BrowserRouter, Navigate, Route, Routes, useLocation, useParams, useSearchParams } from "react-router-dom";
 import { ToastProvider } from "../components";
-import { InventoryScreen, ProjectScreen } from "../features/inventory/InventoryScreen";
 import { LoginScreen } from "../features/login/LoginScreen";
 import { SheetScreen } from "../features/sheet/SheetScreen";
 import { MasterScreen } from "../features/master/MasterScreen";
@@ -10,7 +9,6 @@ import { ChatsScreen } from "../features/chats/ChatsScreen";
 import { InsightsScreen } from "../features/insights/InsightsScreen";
 import { CommandPalette } from "../features/palette";
 import { PipelineScreen } from "../features/pipeline/PipelineScreen";
-import { ReviewScreen } from "../features/review/ReviewScreen";
 import { SourcesScreen } from "../features/sources/SourcesScreen";
 import { BrainScreen } from "../features/brain/BrainScreen";
 import { UpdatesScreen } from "../features/updates/UpdatesScreen";
@@ -35,23 +33,13 @@ const LEGACY: [string, (p: Record<string, string | undefined>, q: URLSearchParam
   ["/groups/:jid", (p) => `/chats/${enc(p.jid ?? "")}`],
   ["/sources/message/:waId", (p) => `/chats?around=${enc(p.waId ?? "")}`],
   ["/jobs/:id", (p) => `/more/pipeline?job=${p.id}`],
-  ["/projects", () => "/more/inventory"],
-  ["/projects/:slug", (p) => `/more/inventory/${enc(p.slug ?? "")}`],
-  ["/units", (_, q) => `/more/inventory?tab=units${q.get("q") ? `&q=${enc(q.get("q")!)}` : ""}`],
-  ["/units/:id", (p) => `/more/inventory?tab=units&unit=${p.id}`],
-  ["/review", (_, q) => `/more/review${q.get("kind") ? `?kind=${enc(q.get("kind")!)}` : ""}`],
-  ["/review/mappings", (_, q) => `/more/review/mappings${q.get("state") ? `?state=${enc(q.get("state")!)}` : ""}`],
-  ["/review/context", () => "/more/review/mappings"],
-  ["/review/images", () => "/more/review/images"],
-  ["/review/fact/:id", () => "/more/review/facts"],
   ["/sources", () => "/more/sources"],
   ["/sources/row/:id", () => "/more/sources"],
-  ["/reconciliation", () => "/more/sources/reconciliation"],
 ];
 
 function NotFound() {
   const loc = useLocation();
-  return <Navigate to="/updates" replace state={{ from: loc.pathname }} />;
+  return <Navigate to="/chats" replace state={{ from: loc.pathname }} />;
 }
 
 function Gate() {
@@ -68,7 +56,7 @@ function Gate() {
     <JobsProvider>
       <Routes>
         <Route element={<Shell />}>
-          <Route index element={<Navigate to="/updates" replace />} />
+          <Route index element={<Navigate to="/chats" replace />} />
           <Route path="updates" element={<UpdatesScreen />} />
           <Route path="sheet" element={<SheetScreen />} />
           <Route path="chats" element={<ChatsScreen />} />
@@ -77,10 +65,6 @@ function Gate() {
           <Route path="master" element={<MasterScreen />} />
           <Route path="more" element={<MoreScreen />} />
           <Route path="more/pipeline" element={<PipelineScreen />} />
-          <Route path="more/inventory" element={<InventoryScreen />} />
-          <Route path="more/inventory/:slug" element={<ProjectScreen />} />
-          <Route path="more/review" element={<ReviewScreen />} />
-          <Route path="more/review/:tab" element={<ReviewScreen />} />
           <Route path="more/sources" element={<SourcesScreen />} />
           <Route path="more/sources/:tab" element={<SourcesScreen />} />
           <Route path="more/brain" element={<BrainScreen />} />

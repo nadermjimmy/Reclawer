@@ -1,5 +1,5 @@
 """Phase 2: the unified matcher (candidates, features, scoring, decide bands), TF-IDF cache, MATCHER modes,
-developer-scoped aliases, the inventory path's rank(), and training."""
+developer-scoped aliases and training."""
 import json, os, time
 import pytest
 
@@ -86,13 +86,6 @@ def test_auto_band_is_off_by_default(env, monkeypatch):
         assert ar["Sokhna&new zayed"][1] == "near"
         monkeypatch.setattr(matcher, "MATCH_AUTO", 0.5)
         assert matcher.decide(c, "سيليستيا", "", GRIDS)["Sokhna&new zayed"][1] == "alias"
-
-
-def test_rank_for_inventory():
-    import matcher
-    ranked = matcher.rank("palm hills", ["Palm Hills New Cairo", "Mountain View", "بالم هيلز"])
-    assert ranked[0][1] >= 0.9 and {n for n, s in ranked if s >= 0.9} == {"Palm Hills New Cairo", "بالم هيلز"}
-    assert matcher.rank("Celestia", ["Celestia"], 0.9) == [("Celestia", 1.0)]
 
 
 def test_train_and_promote(env, tmp_path, monkeypatch):

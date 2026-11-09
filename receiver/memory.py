@@ -8,7 +8,7 @@ FEWSHOT=1 they are added to the USER turn of extraction and brain requests; syst
 they keep caching, and batch requests carry them too (they are baked into each request).
 """
 import json, os, time
-import db, normalize, profiles, textsim
+import normalize, profiles, textsim
 
 FEWSHOT_K = int(os.getenv("FEWSHOT_K", "6"))
 POOL = 3000  # most recent examples considered per retrieval

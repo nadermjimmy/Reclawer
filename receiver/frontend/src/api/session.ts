@@ -11,7 +11,6 @@ export interface Market {
 export interface ShellCounts {
   open_suggestions: number;
   rows_to_place: number;
-  open_issues: number;
   failed_downloads: number;
   chats_with_suggestions: number;
 }

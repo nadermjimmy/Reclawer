@@ -4,7 +4,7 @@ import datetime, hashlib, hmac, os, time
 from urllib.parse import urlencode
 from fastapi import APIRouter, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
-import brain, build, db, facts, history, mapping, media_review, parse_files, proposals, rules
+import brain, db, proposals
 
 PASSWORD = os.getenv("APP_PASSWORD", "")
 SECRET = (os.getenv("SESSION_SECRET") or PASSWORD or "unset").encode()
@@ -78,81 +78,25 @@ def _rule_suggestions_job(log):
 
 
 STEPS = [
-    ("sync_groups", "1. Sync chats", "Fetch the list of groups and private chats from Evolution.",
-     history.sync_groups),
-    ("pull_history", "2. Pull history", "Copy the ticked chats' stored messages into the app.", history.pull_history),
-    ("download_media", "3. Download attachments", "Fetch workbooks, PDFs and images from the ticked chats.",
-     history.download_media),
-    ("parse_files", "4. Read files", "Read every workbook/CSV/PDF cell by cell.", parse_files.parse_all),
-    ("map_projects", "5. Map projects (Claude)", "Propose the parent project / phase for each table.",
-     mapping.propose),
-    ("extract_facts", "6. Extract facts (Claude)", "Find location, service charge, payment plan, completion, "
-     "amenities, handover and status statements.", facts.extract_all),
-    ("propose_updates", "6b. Propose sheet updates (Claude)", "Read every group's text messages first, then "
+    # chat steps (sync chats, pull history, download attachments, read files) run inside "Sync all chats"
+    ("propose_updates", "Propose sheet updates (Claude)", "Read every group's text messages first, then "
      "spreadsheets, PDFs and images for what's still missing; sent through the batch queue at half price, results "
      "arrive on the Updates page as each stage finishes.", proposals.propose),
-    ("brain_review", "6c. Brain review (Claude)", "Second look at open suggestions: moves false new rows onto "
+    ("brain_review", "Brain review (Claude)", "Second look at open suggestions: moves false new rows onto "
      "existing rows, approves safe updates (existing row, sheet format, price within ±20%, no Hold/Hide, never "
      "commission) and rejects clear noise. Runs after every sync; run it here for the backlog.", brain.review),
     ("eval_report", "Eval: brain report (no LLM)", "Freeze every decision a person made into a gold set and measure "
      "matching, noise, accepted values, auto-approve precision and API cost per source kind. Free: no Claude calls.",
      _eval_job),
-    ("requeue_noise", "Re-read skipped messages", "Put every text message the noise filter skipped back in the "
-     "queue; the next read (6b) sends them to Claude.", _requeue_noise),
     ("retrain", "Retrain matcher + noise filter (no LLM)", "Train both models on every person decision, re-run the "
      "eval and promote a model only if it does at least as well. Runs nightly by itself when 25+ new labels exist.",
      _retrain_job),
+    ("requeue_noise", "Re-read skipped messages", "Put every text message the noise filter skipped back in the "
+     "queue; the next sheet-update read sends them to Claude.", _requeue_noise),
     ("rule_suggestions", "Rule suggestions (no LLM)", "Suggest owner-rule additions from what people rejected. "
      "Suggestions only: nothing is applied.", _rule_suggestions_job),
-    ("classify_images", "7. Review images (Claude)", "Propose what each image shows (shown only after you approve).",
-     media_review.classify),
-    ("build", "8. Build inventory", "Rebuild projects, phases, units and the review queue.", build.rebuild),
 ]
 STEP_FN = {s[0]: (s[1], s[3]) for s in STEPS}
-
-
-def fact_summary(rows_):
-    """Current display state for one fact type (never filled in when the group is silent)."""
-    live = [f for f in rows_ if f["validation_status"] != "rejected"]
-    if not live:
-        return {"state": "not_supplied", "value": None, "items": rows_}
-    live.sort(key=lambda f: f["observed_ts"] or 0)
-    latest = live[-1]
-    values = {(f["parsed_value"] or f["raw_value"]).strip().lower() for f in live}
-    state = latest["validation_status"]
-    if len(values) > 1 and not latest["updates_previous"]:
-        state = "conflict"
-    return {"state": state, "value": latest["parsed_value"] or latest["raw_value"], "items": rows_}
-
-
-def latest_snapshots(c, where, args):
-    """Most recent observation per unit."""
-    return c.execute(
-        "SELECT s.*, u.unit_code, u.phase_key, p.name project, p.slug FROM unit_snapshots s "
-        "JOIN units u ON u.id=s.unit_id JOIN projects p ON p.id=u.project_id "
-        f"WHERE {where} AND s.id=(SELECT s2.id FROM unit_snapshots s2 WHERE s2.unit_id=s.unit_id "
-        "ORDER BY COALESCE(s2.snapshot_ts,0) DESC, s2.id DESC LIMIT 1) "
-        "ORDER BY p.name, u.phase_key, u.unit_code", args).fetchall()
-
-
-def save_mapping(key, action, project_name="", phase_label="", developer=""):
-    """Reviewer decision on a table's project mapping (approve, possibly with edits / reject / exclude)."""
-    with db.connect() as c:
-        cur = c.execute("SELECT * FROM label_mappings WHERE context_key=?", (key,)).fetchone()
-        if action == "reject":
-            c.execute("INSERT INTO label_mappings(context_key,decision,review_state,source,updated_at) "
-                      "VALUES(?, 'unresolved', 'rejected', 'reviewer', ?) ON CONFLICT(context_key) DO UPDATE SET "
-                      "review_state='rejected', updated_at=excluded.updated_at", (key, int(time.time())))
-        elif action == "exclude":
-            c.execute("INSERT OR REPLACE INTO label_mappings VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-                      (key, "exclude_scope", "", "", "", "high", f"Reviewer: outside {rules.MARKET_NAME} scope", "no",
-                       "reviewer", "approved", int(time.time())))
-        else:
-            c.execute("INSERT OR REPLACE INTO label_mappings VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-                      (key, "project", developer.strip() or (cur["developer"] if cur else ""),
-                       project_name.strip(), phase_label.strip(), "high",
-                       (cur["rationale"] if cur and cur["project_name"] == project_name.strip() else
-                        "Set by reviewer"), "yes", "reviewer", "approved", int(time.time())))
 
 
 # ---------- stored files (opened from the app) ----------
@@ -169,9 +113,8 @@ def source_file(file_id: int, download: int = 0):
 
 
 # ---------- old page URLs: the app maps each one to its new screen ----------
-OLD_PAGES = ("/", "/login", "/logout", "/dashboard", "/feed", "/groups", "/projects", "/units", "/review",
-             "/sources", "/reconciliation", "/master", "/updates")
-OLD_PREFIXES = ("/groups/", "/projects/", "/units/", "/review/", "/sources/message/", "/sources/row/", "/jobs/")
+OLD_PAGES = ("/", "/login", "/logout", "/dashboard", "/feed", "/groups", "/sources", "/master", "/updates")
+OLD_PREFIXES = ("/groups/", "/sources/message/", "/sources/row/", "/jobs/")
 
 
 @router.get("/")

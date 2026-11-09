@@ -10,10 +10,9 @@ Pipeline per query (project as written + developer + chat + field + source kind)
    or the brain confirms it) unless MATCH_AUTO is set and the probability reaches it.
 
 master.match calls this only under MATCHER=v2 (or alongside the legacy matcher under MATCHER=shadow).
-rank(name, names) is the generic name-list version used by the inventory path (build.link_facts).
 """
 import hashlib, os
-import cell_parse as cp, db, master_schema as ms, models, normalize, textsim
+import cell_parse as cp, master_schema as ms, models, normalize, textsim
 
 
 def _env_float(name, default=None):
@@ -297,27 +296,3 @@ def row_probability(c, p_row, row, chat_jid=None, assigned=()):
         if r["id"] == row["id"]:
             return p
     return 0.0
-
-
-# ---------- generic name lists (inventory path) ----------
-def name_score(a, b):
-    from rapidfuzz import fuzz
-    ka, kb = normalize.compact(a), normalize.compact(b)
-    if not ka or not kb:
-        return 0.0
-    if ka == kb:
-        return 1.0
-    na, nb = _norm(a), _norm(b)
-    ta, tb = normalize.translit_key(a), normalize.translit_key(b)
-    s = fuzz.token_set_ratio(na, nb) / 100 * 0.95 if na and nb else 0.0
-    if ta and tb:
-        s = max(s, 0.97 if ta == tb else fuzz.ratio(ta, tb) / 100 * 0.85)
-    if len(ka) >= 4 and len(kb) >= 4 and (ka in kb or kb in ka):
-        s = max(s, 0.9)
-    return s
-
-
-def rank(name, names, threshold=0.0):
-    """[(name, score)] best first, scores in [0, 1]."""
-    out = [(n, name_score(name, n)) for n in names]
-    return sorted([t for t in out if t[1] >= threshold], key=lambda t: -t[1])

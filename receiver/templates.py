@@ -7,7 +7,7 @@ same update dicts Claude returns and go through master.add_proposal, so the read
 and the brain behave exactly as for Claude's output. Behind TEMPLATES=1 (default off).
 """
 import hashlib, json, os, time
-import db, master_schema as ms, normalize
+import master_schema as ms, normalize
 
 TEMPLATES = os.getenv("TEMPLATES", "0") == "1"
 ROLES = ("project", "developer", "location", *[f for f in ms.ALL_PROPOSABLE if f != "location"])

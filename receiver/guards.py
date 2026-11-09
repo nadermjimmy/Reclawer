@@ -9,7 +9,7 @@ A value passes when its robust z-score (median / MAD) is within GUARD_Z. Used by
 GUARDS_V2=1 only; the owner's exclusions (commission, feedback, location, Hold/Hide, new rows) stay in brain.py.
 """
 import json, os, statistics
-import cell_parse as cp, db, master_schema as ms
+import cell_parse as cp, master_schema as ms
 
 MIN_POINTS = 5
 GUARD_Z = float(os.getenv("GUARD_Z", "3.5"))

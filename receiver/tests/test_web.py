@@ -12,9 +12,8 @@ def client():
 
 
 def test_old_urls_open_the_app(client):
-    for path, target in [("/", "/app"), ("/login", "/app"), ("/projects", "/app/projects"),
-                         ("/groups/111@g.us", "/app/groups/111@g.us"), ("/units?status=available", "/app/units?status=available"),
-                         ("/review/mappings", "/app/review/mappings"), ("/sources/message/m1", "/app/sources/message/m1")]:
+    for path, target in [("/", "/app"), ("/login", "/app"), ("/groups/111@g.us", "/app/groups/111@g.us"),
+                         ("/sources/message/m1", "/app/sources/message/m1")]:
         r = client.get(path, follow_redirects=False)
         assert r.status_code == 303 and r.headers["location"] == target, path
     r = client.get("/api/me")
@@ -100,6 +99,6 @@ def test_reset_last(client):
     assert client.post("/api/reset", json={"confirm": "nope"}).status_code == 422
     assert client.post("/api/reset", json={"confirm": "DELETE ALL"}).status_code == 200
     with db.connect() as c:
-        for t in ("source_messages", "source_files", "units", "label_mappings", "messages", "groups"):
+        for t in ("source_messages", "source_files", "proposals", "messages", "groups"):
             assert c.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0] == 0, t
     assert not [f for f in os.listdir(db.MEDIA_DIR) if os.path.isfile(os.path.join(db.MEDIA_DIR, f))]

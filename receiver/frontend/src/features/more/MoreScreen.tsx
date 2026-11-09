@@ -7,10 +7,9 @@ import "./more.css";
 
 const DESCRIPTIONS: Record<string, string> = {
   "/sheet": "The master as a grid, with approved changes and open suggestions",
-  "/more/pipeline": "Steps 1 to 8 and 6b, recent runs, Start over",
-  "/more/inventory": "Projects, units and unit history",
-  "/more/review": "Issues, mappings, images and facts",
-  "/more/sources": "Files, failed downloads and reconciliation",
+  "/master": "Upload the master workbook, rows to place, downloads",
+  "/more/pipeline": "Sync all chats, sheet updates, brain, eval and retrain; recent runs, Start over",
+  "/more/sources": "Files and failed downloads",
   "/more/brain": "Models, eval per source kind, LLM share, cost and flags",
 };
 
