@@ -178,6 +178,8 @@ def init():
         _add_columns(c, "brain_reviews", ["row_key TEXT"])
         _add_columns(c, "master_aliases", ["developer_key TEXT"])
         _add_columns(c, "ingest_items", ["cache_json TEXT"])
+        _add_columns(c, "source_messages", ["file_size INTEGER"])
+        _add_columns(c, "source_files", ["pruned_at INTEGER"])
         # developer-scoped aliases start from the global ones (developer_key '' = any developer, today's behaviour)
         c.execute("INSERT OR IGNORE INTO dev_aliases(alias_key,developer_key,project_key,label,confirmed_at) "
                   "SELECT alias_key, COALESCE(developer_key,''), project_key, label, confirmed_at FROM master_aliases")

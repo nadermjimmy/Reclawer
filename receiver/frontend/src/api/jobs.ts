@@ -41,6 +41,8 @@ export interface Step {
 
 export interface PipelineInfo {
   counts: { groups: number; in_scope: number; messages: number; files: number; suggestions: number };
+  disk?: { total_mb: number; used_mb: number; free_mb: number };
+  window?: { days: number; media_max_mb: number; min_free_mb: number };
   job: RunningJob | null;
 }
 

@@ -62,6 +62,13 @@ export function PipelineScreen() {
           <Stat value={fmtNumber(c.messages)} label="Messages" />
           <Stat value={fmtNumber(c.files)} label="Files" />
           <Stat value={fmtNumber(c.suggestions)} label="Open suggestions" />
+          {info.data?.disk && (
+            <Stat value={`${(info.data.disk.free_mb / 1024).toFixed(1)} GB`}
+              label={`Free of ${(info.data.disk.total_mb / 1024).toFixed(1)} GB`} />
+          )}
+          {info.data?.window && (
+            <Stat value={info.data.window.days ? `${info.data.window.days} days` : "All"} label="Reading window" />
+          )}
         </div>
       )}
 
