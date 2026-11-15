@@ -72,6 +72,21 @@ def _retrain_job(log):
     retrain.run(log, force=True, reason="manual")
 
 
+def _uae_preview(log):
+    import market_scope
+    market_scope.apply(log, dry_run=True)
+
+
+def _uae_untick(log):
+    import market_scope
+    market_scope.apply(log)
+
+
+def _uae_undo(log):
+    import market_scope
+    market_scope.undo(log)
+
+
 def _free_space(log):
     import history
     history.free_space(log)
@@ -98,6 +113,13 @@ STEPS = [
      _retrain_job),
     ("requeue_noise", "Re-read skipped messages", "Put every text message the noise filter skipped back in the "
      "queue; the next sheet-update read sends them to Claude.", _requeue_noise),
+    ("uae_preview", "Preview UAE developer chats (no change)", "List the groups of UAE developers "
+     "(uae_developers.json) that would be unticked, and the Emaar / Modon / Reportage-style groups kept because they "
+     "talk about Egypt. Changes nothing.", _uae_preview),
+    ("uae_untick", "Untick UAE developer chats", "Untick UAE developers' groups so they aren't pulled or read. "
+     "Developers selling in both markets are decided per chat from its messages; chats a person set and chats the "
+     "team assigned are never touched. New groups are checked on every sync.", _uae_untick),
+    ("uae_undo", "Re-tick UAE groups", "Undo: tick again every group the UAE rule unticked.", _uae_undo),
     ("free_space", "Free space (no LLM)", "Delete downloaded attachments posted only before the reading window "
      "(INGEST_DAYS) and the raw WhatsApp records of old messages. Message text, parsed sheet cells, PDF text, "
      "suggestions and decisions are kept.", _free_space),

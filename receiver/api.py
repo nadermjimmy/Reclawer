@@ -555,6 +555,9 @@ def master_export_file(which: str):
 REDO = {"brain_review": "Re-check what it left open"}
 
 
+MARKET_SCOPE_AUTO = os.getenv("AUTO_UAE_UNTICK", "1") != "0" and os.getenv("MARKET", "eg").lower() == "eg"
+
+
 def chat_routine(log, mode="batch"):
     """Everyday sync of every inventory chat (all groups + ticked private chats), text first:
     list chats, pull messages, suggest from text, then download and read attachments and suggest from them.
@@ -573,6 +576,9 @@ def chat_routine(log, mode="batch"):
 
     step(0)
     history.sync_groups(log)
+    if MARKET_SCOPE_AUTO:
+        import market_scope
+        market_scope.apply(log, only_new=True)  # new UAE developers' groups are unticked before anything is read
     step(1)
     history.pull_history(log)
     step(2)
@@ -808,8 +814,9 @@ def list_chats(filter: str = "all", q: str = "", scope: str = "", has_suggestion
 
 
 def _set_scope(c, jids, on):
-    c.executemany("INSERT INTO group_scope(jid,in_scope) VALUES(?,?) ON CONFLICT(jid) DO UPDATE SET in_scope=?",
-                  [(j, 1 if on else 0, 1 if on else 0) for j in jids])
+    # note='person': automatic rules (market_scope) never override a person's choice
+    c.executemany("INSERT INTO group_scope(jid,in_scope,note) VALUES(?,?,'person') ON CONFLICT(jid) DO UPDATE SET "
+                  "in_scope=?, note='person'", [(j, 1 if on else 0, 1 if on else 0) for j in jids])
 
 
 @router.patch("/chats/{jid}")
