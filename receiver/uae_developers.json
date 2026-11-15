@@ -1,0 +1,16 @@
+{
+  "_comment": "UAE developers whose WhatsApp groups are not Egypt inventory chats. market_scope.py unticks those groups so they are not pulled or read. 'both_markets' developers also sell in Egypt: their groups are decided per chat from the chat's own messages (EGP / Egyptian places vs AED / UAE places). Names are matched as whole words in the chat name, English or Arabic. Edit freely; no code change needed.",
+  "uae_only": [
+    "Damac", "داماك", "Nakheel", "نخيل", "Sobha", "Sobha Realty", "شوبا", "Meraas", "Ellington", "Binghatti",
+    "Danube", "Azizi", "Select Group", "Omniyat", "Meydan", "Dubai Properties", "Deyaar", "Imtiaz", "Samana",
+    "Tiger Properties", "Object 1", "Object One", "Arada", "Bloom Holding", "Bloom Properties", "Wasl", "Nshama",
+    "Dubai Holding", "Dubai South", "Expo City", "Union Properties", "MAG", "MAG Lifestyle", "Al Habtoor", "Iman Developers",
+    "Vincitore", "Leos", "Peace Homes", "Prestige One", "Condor", "Pantheon", "Reef Luxury", "Ohana", "Aark",
+    "Sol Properties", "AYS", "Taraf", "Laya", "Al Hamra", "Marjan", "RAK Properties", "Alef", "Imkan",
+    "Ajmal Makan", "Eagle Hills", "Damac Properties", "Sobha Hartland", "Ellington Properties",
+    "Aldar"
+  ],
+  "both_markets": [
+    "Emaar", "إعمار", "اعمار", "Emaar Misr", "Modon", "مدن", "Reportage", "ريبورتاج", "Majid Al Futtaim", "MAF"
+  ]
+}

@@ -19,8 +19,8 @@ def _progress(log, n, **extra):
 def sync_chat(log, jid, add_to_scope=False):
     with db.connect() as c:
         if add_to_scope:
-            c.execute("INSERT INTO group_scope(jid,in_scope) VALUES(?,1) ON CONFLICT(jid) DO UPDATE SET in_scope=1",
-                      (jid,))
+            c.execute("INSERT INTO group_scope(jid,in_scope,note) VALUES(?,1,'person') ON CONFLICT(jid) DO UPDATE SET "
+                      "in_scope=1, note='person'", (jid,))
         name = (c.execute("SELECT name FROM groups WHERE jid=?", (jid,)).fetchone() or [jid])[0]
     if add_to_scope:  # log only after the transaction above is committed (the log writes on its own connection)
         log("Added this chat to the inventory chats")

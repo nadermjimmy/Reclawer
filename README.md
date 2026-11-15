@@ -46,6 +46,12 @@ attachments posted only before the window and the raw WhatsApp records of old me
 cells, PDF text, suggestions and decisions stay. PDFs and images are sent to Claude in batches of at most
 `INGEST_BATCH_MB` (default 100) held in memory at a time. Pipeline shows free disk space.
 
+**UAE developers' groups** (`receiver/uae_developers.json`) are unticked so they aren't pulled or read
+(Pipeline: Preview / Untick UAE developer chats / Re-tick UAE groups; new groups are checked on every sync, turn
+off with `AUTO_UAE_UNTICK=0`). Developers in both markets (Emaar, Modon, Reportage …) are decided per chat from its
+messages (EGP / Egyptian places vs AED / UAE places); unclear chats stay ticked. A person's tick or untick on the
+Chats page and the team's group assignment are never overridden.
+
 The old project/unit inventory (map projects, extract facts, review images, build inventory, and the Inventory,
 Review and Reconciliation screens) was removed; its tables are left untouched in existing databases.
 
