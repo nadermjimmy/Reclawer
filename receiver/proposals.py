@@ -15,7 +15,7 @@ Two ways to run the same stages:
   what the earlier stage found. No job lock is held while a batch waits.
 """
 import base64, io, json, os, re, threading, time
-import cell_parse as cp, db, extraction_cache as xc, jobs, llm, master, master_schema as ms, profiles, rows, templates
+import cell_parse as cp, db, extraction_cache as xc, jobs, llm, master, master_schema as ms, profiles, rows, templates, window
 
 FIELD_HELP = "\n".join([
     "- location: one-letter location code (see codes below)",
@@ -69,7 +69,8 @@ IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp", "image/gif"}
 IMAGE_MAX = 5 * 1024 * 1024        # API limit per image
 PDF_PAGES_PER_REQUEST = 20
 PDF_MAX = 24 * 1024 * 1024         # keep each request well under the 32 MB request limit
-BATCH_MAX = 200 * 1024 * 1024      # keep each batch under the 256 MB batch limit
+# one batch's request bodies are held in memory at once: keep it well under the 256 MB batch limit
+BATCH_MAX = int(os.getenv("INGEST_BATCH_MB", "100")) * 1024 * 1024
 FEWSHOT = os.getenv("FEWSHOT", "0") == "1"  # Phase 3: past person decisions in the user turn (default off)
 
 
@@ -122,13 +123,21 @@ def _chats(c, jids):
 
 
 def _file_ids(c, jids):
+    """Files posted in these chats (default: the in-scope ones) within the window (INGEST_DAYS)."""
     if jids is None:
-        return rows.scoped_file_ids(c)
-    if not jids:
+        ids = rows.scoped_file_ids(c)
+    elif not jids:
         return set()
-    return {r[0] for r in c.execute(
-        "SELECT DISTINCT o.file_id FROM file_occurrences o JOIN source_messages m ON m.wa_id=o.wa_id "
-        f"WHERE m.group_jid IN ({','.join('?' * len(jids))})", list(jids))}
+    else:
+        ids = {r[0] for r in c.execute(
+            "SELECT DISTINCT o.file_id FROM file_occurrences o JOIN source_messages m ON m.wa_id=o.wa_id "
+            f"WHERE m.group_jid IN ({','.join('?' * len(jids))})", list(jids))}
+    since = window.cutoff()
+    if not since:
+        return ids
+    recent = {r[0] for r in c.execute("SELECT o.file_id FROM file_occurrences o JOIN source_messages m "
+                                      "ON m.wa_id=o.wa_id GROUP BY o.file_id HAVING MAX(COALESCE(m.ts,0))>=?", (since,))}
+    return ids & recent
 
 
 def _file_ts(c, file_id):
@@ -153,7 +162,7 @@ def _chat_context(c, file_id, around=4):
             "developer": prof["developer"] if prof else "", "jid": m["group_jid"]}
 
 
-def text_units(c, jids=None, skip=None, batch=60):
+def text_units(c, jids=None, skip=None, batch=60, budget=None):
     """One request per chat chunk, so each request carries that chat's developer profile."""
     chats = _chats(c, jids)
     if not chats:
@@ -161,7 +170,8 @@ def text_units(c, jids=None, skip=None, batch=60):
     skip = _skip_keys(c) if skip is None else skip
     msgs = [m for m in c.execute(
         "SELECT wa_id, group_jid, ts, text, file_name FROM source_messages "
-        f"WHERE group_jid IN ({','.join('?' * len(chats))}) AND text<>'' ORDER BY group_jid, ts", chats)
+        f"WHERE group_jid IN ({','.join('?' * len(chats))}) AND text<>'' AND COALESCE(ts,0)>=? ORDER BY group_jid, ts",
+        [*chats, window.cutoff()])
         if "u:" + m["wa_id"] not in skip]
     import noise
     msgs = noise.filter_messages(c, msgs)  # NOISE_SKIP (off by default): likely noise skips the LLM, logged
@@ -205,7 +215,7 @@ def text_units(c, jids=None, skip=None, batch=60):
     return out
 
 
-def sheet_units(c, jids=None, skip=None, chunk_rows=150):
+def sheet_units(c, jids=None, skip=None, chunk_rows=150, budget=None):
     files = _file_ids(c, jids)
     skip = _skip_keys(c) if skip is None else skip
     todo = [r for r in c.execute(
@@ -275,10 +285,12 @@ def _pdf_chunks(path, n_pages):
     return out
 
 
-def pdf_units(c, jids=None, skip=None):
+def pdf_units(c, jids=None, skip=None, budget=None):
+    """budget (bytes): stop adding requests once their documents add up to this, so only one batch's worth of
+    PDFs is in memory at a time; the rest is built on the next call (their keys aren't read yet)."""
     files = _file_ids(c, jids)
     skip = _skip_keys(c) if skip is None else skip
-    out = []
+    out, size = [], 0
     for f in c.execute("SELECT * FROM source_files WHERE kind='pdf' AND parse_status='parsed' ORDER BY id").fetchall():
         if f["id"] not in files or not f["path"] or not os.path.exists(f["path"]):
             continue
@@ -293,10 +305,13 @@ def pdf_units(c, jids=None, skip=None):
             chunks = _pdf_chunks(f["path"], len(pages))
         except Exception:
             continue
+        if budget and out and size >= budget:
+            break
         for a, b, data in chunks:
             key = "up:%d:%d" % (f["id"], a)
             if key in skip:
                 continue
+            size += len(data) * 4 // 3
             note = (f"{FILE_RULES}\nFile: {f['file_name']} (pages {a}-{b} of {max(pages)}).\n"
                     f"source_id: write 'p' followed by the page number in the ORIGINAL file, e.g. 'p{a}'.\n"
                     f"Chat context: {json.dumps(ctx, ensure_ascii=False)}")
@@ -313,10 +328,10 @@ def pdf_units(c, jids=None, skip=None):
     return out
 
 
-def image_units(c, jids=None, skip=None):
+def image_units(c, jids=None, skip=None, budget=None):
     files = _file_ids(c, jids)
     skip = _skip_keys(c) if skip is None else skip
-    out = []
+    out, size = [], 0
     for r in c.execute("SELECT r.id rid, f.* FROM source_rows r JOIN source_files f ON f.id=r.file_id "
                        "WHERE r.kind='image' ORDER BY f.id").fetchall():
         key = "ui:%d" % r["id"]
@@ -324,6 +339,9 @@ def image_units(c, jids=None, skip=None):
         if (r["id"] not in files or key in skip or mt not in IMAGE_TYPES or not r["path"]
                 or not os.path.exists(r["path"]) or os.path.getsize(r["path"]) > IMAGE_MAX):
             continue
+        if budget and out and size >= budget:
+            break
+        size += os.path.getsize(r["path"]) * 4 // 3
         ctx = _chat_context(c, r["id"])
         note = (f"{FILE_RULES}\nFile: {r['file_name'] or 'image'}. source_id: write 'img'.\n"
                 f"Chat context: {json.dumps(ctx, ensure_ascii=False)}")
@@ -383,11 +401,30 @@ def _key_rejected(e):
     return isinstance(e, (anthropic.AuthenticationError, anthropic.PermissionDeniedError))
 
 
+LIVE_BUDGET = 64 * 1024 * 1024  # PDFs / images held in memory per round of a live read
+
+
 def run_stage_live(log, stage, jids=None):
-    """Answer one stage's requests now, several at a time. Returns (proposals written, failed requests)."""
+    """Answer one stage's requests now, several at a time, in rounds of at most LIVE_BUDGET of files.
+    Returns (proposals written, failed requests)."""
+    written = failed = 0
+    tried = set()
+    while True:
+        with db.connect() as c:
+            units = BUILDERS[stage](c, jids, _skip_keys(c, tried), budget=LIVE_BUDGET)
+        if not units:
+            return written, failed
+        for u in units:
+            tried.update(u["keys"])
+        w, f, stop = _run_live_units(log, stage, units)
+        written += w
+        failed += f
+        if stop:  # the API key was rejected: every other request would fail the same way
+            return written, failed
+
+
+def _run_live_units(log, stage, units):
     from concurrent.futures import ThreadPoolExecutor, as_completed
-    with db.connect() as c:
-        units = BUILDERS[stage](c, jids)
     if units:
         log(f"{dict(STAGES)[stage]}: {len(units)} request(s)")
     written = failed = 0
@@ -411,7 +448,7 @@ def run_stage_live(log, stage, jids=None):
                     for other in futures:
                         other.cancel()
                     log(KEY_HELP)
-                    return written, failed + 1
+                    return written, failed + 1, True
                 log(f"{u['label']} failed: {e}")
                 failed += 1
                 continue
@@ -420,7 +457,7 @@ def run_stage_live(log, stage, jids=None):
             written += n
             _done(u["keys"])
             log(f"{u['label']}: {n} suggestion(s)")
-    return written, failed
+    return written, failed, False
 
 
 def _run_local(log, units):
@@ -491,7 +528,7 @@ def _advance(run_id):
                 failed_keys = set()
                 for r in c.execute("SELECT keys_json FROM ingest_items WHERE run_id=? AND state='failed'", (run_id,)):
                     failed_keys.update(json.loads(r[0]))  # don't retry a failed request within the same run
-                units = BUILDERS[stage](c, None, _skip_keys(c, failed_keys))
+                units = BUILDERS[stage](c, None, _skip_keys(c, failed_keys), budget=BATCH_MAX)
         if done:
             try:
                 import brain

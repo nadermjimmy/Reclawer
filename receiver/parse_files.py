@@ -162,7 +162,7 @@ PARSERS = {"workbook": parse_workbook, "csv": parse_csv, "pdf": parse_pdf, "imag
 
 def parse_all(log, reparse=False):
     with db.connect() as c:
-        q = "SELECT * FROM source_files WHERE kind IN ('workbook','csv','pdf','image')"
+        q = "SELECT * FROM source_files WHERE kind IN ('workbook','csv','pdf','image') AND path IS NOT NULL"
         if not reparse:
             q += " AND parse_status='pending'"
         files = c.execute(q).fetchall()

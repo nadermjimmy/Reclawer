@@ -72,6 +72,11 @@ def _retrain_job(log):
     retrain.run(log, force=True, reason="manual")
 
 
+def _free_space(log):
+    import history
+    history.free_space(log)
+
+
 def _rule_suggestions_job(log):
     import rule_suggestions
     rule_suggestions.run(log)
@@ -93,6 +98,9 @@ STEPS = [
      _retrain_job),
     ("requeue_noise", "Re-read skipped messages", "Put every text message the noise filter skipped back in the "
      "queue; the next sheet-update read sends them to Claude.", _requeue_noise),
+    ("free_space", "Free space (no LLM)", "Delete downloaded attachments posted only before the reading window "
+     "(INGEST_DAYS) and the raw WhatsApp records of old messages. Message text, parsed sheet cells, PDF text, "
+     "suggestions and decisions are kept.", _free_space),
     ("rule_suggestions", "Rule suggestions (no LLM)", "Suggest owner-rule additions from what people rejected. "
      "Suggestions only: nothing is applied.", _rule_suggestions_job),
 ]
@@ -104,7 +112,7 @@ STEP_FN = {s[0]: (s[1], s[3]) for s in STEPS}
 def source_file(file_id: int, download: int = 0):
     with db.connect() as c:
         f = c.execute("SELECT * FROM source_files WHERE id=?", (file_id,)).fetchone()
-    if not f or not os.path.exists(f["path"]):
+    if not f or not f["path"] or not os.path.exists(f["path"]):
         return HTMLResponse("File not found", 404)
     return FileResponse(f["path"], media_type=f["mimetype"] or None,
                         filename=f["file_name"] or os.path.basename(f["path"]),

@@ -565,6 +565,8 @@ def chat_routine(log, mode="batch"):
         has_master = master.current_import(c) is not None
     stages = ["Sync chats", "Pull history", "Suggest from text", "Download attachments", "Read files",
               "Suggest from files"]
+    import window
+    log(f"Reading the {window.describe()}. {window.disk()['free_mb']} MB free on the data volume.")
 
     def step(i):
         log("PROGRESS " + json.dumps({"stage": stages[i], "done": i, "total": len(stages)}))
@@ -691,7 +693,9 @@ def pipeline():
             "files": c.execute("SELECT COUNT(*) FROM source_files").fetchone()[0],
             "suggestions": c.execute("SELECT COUNT(*) FROM proposals WHERE state='proposed'").fetchone()[0],
         }
-        return {"counts": counts, "job": running_job(c)}
+        import window
+        return {"counts": counts, "job": running_job(c), "disk": window.disk(),
+                "window": {"days": window.DAYS, "media_max_mb": window.MEDIA_MAX_MB, "min_free_mb": window.MIN_FREE_MB}}
 
 
 @router.post("/reset")

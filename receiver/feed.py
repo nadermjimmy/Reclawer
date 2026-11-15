@@ -107,7 +107,7 @@ def preview(file_id: int):
     """Sheet grid for workbooks/CSVs (cells exactly as stored), page count for PDFs."""
     with db.connect() as c:
         f = c.execute("SELECT * FROM source_files WHERE id=?", (file_id,)).fetchone()
-    if not f or not os.path.exists(f["path"]):
+    if not f or not f["path"] or not os.path.exists(f["path"]):
         return JSONResponse({"error": "file not found"}, 404)
     try:
         if f["kind"] == "workbook" and not f["path"].lower().endswith(".xls"):

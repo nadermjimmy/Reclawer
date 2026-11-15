@@ -1,6 +1,6 @@
 """Pull group history and attachments from Evolution into the immutable source tables."""
 import base64, hashlib, json, mimetypes, os, re, time
-import db, evolution, search
+import db, evolution, search, window
 
 WRAPPERS = ("ephemeralMessage", "viewOnceMessage", "viewOnceMessageV2", "documentWithCaptionMessage",
             "editedMessage")
@@ -57,9 +57,20 @@ def parse_record(rec, origin):
         "sender_name": rec.get("pushName"), "ts": ts, "message_type": mtype, "text": text,
         "file_name": media.get("fileName"), "mimetype": media.get("mimetype"),
         "has_media": 1 if media_key in ("imageMessage", "documentMessage", "videoMessage") else 0,
+        "file_size": _size(media.get("fileLength")),
         "raw_json": json.dumps(rec, ensure_ascii=False), "origin": origin,
         "ingested_at": int(time.time()),
     }
+
+
+def _size(v):
+    """WhatsApp's fileLength: a number, a numeric string, or {low, high}."""
+    if isinstance(v, dict):
+        return (int(v.get("high") or 0) << 32) + int(v.get("low") or 0)
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return None
 
 
 def store_message(c, row):
@@ -128,19 +139,40 @@ def pull_history(log, only_scoped=True, jids=None):
         log("No chats ticked yet - run 'Sync chats', then tick the inventory chat(s) on the Chats page.")
         return 0
     total = 0
+    since = window.cutoff()
     for jid in jids:
-        new = seen = 0
+        new = seen = old = 0
         page, pages = 1, 1
         while page <= pages:
             records, pages = evolution.find_messages(jid, page)
             with db.connect() as c:
                 for rec in records:
                     seen += 1
-                    new += store_message(c, parse_record(rec, "history"))
+                    row = parse_record(rec, "history")
+                    if row and since and (row["ts"] or 0) < since:
+                        old += 1  # outside the window (INGEST_DAYS): not stored
+                        continue
+                    new += store_message(c, row)
+            ts = [_ts(r) for r in records]
+            ts = [t for t in ts if t]
+            # Evolution pages newest first: once a whole page is older than the window, the rest is older too
+            if since and ts and max(ts) < since and _newest_first(ts):
+                break
             page += 1
-        log(f"{jid}: {seen} messages read, {new} new")
+        log(f"{jid}: {seen} messages read, {new} new, {old} older than the window skipped")
         total += new
     return total
+
+
+def _ts(rec):
+    try:
+        return int(rec.get("messageTimestamp"))
+    except (TypeError, ValueError):
+        return None
+
+
+def _newest_first(ts):
+    return len(ts) < 2 or ts[0] >= ts[-1]
 
 
 def kind_of(name, mimetype):
@@ -185,6 +217,10 @@ def save_file(c, wa_id, content, file_name, mimetype):
     return file_id
 
 
+class DiskLow(RuntimeError):
+    pass
+
+
 def fetch_media(wa_id):
     """Download one message's image/document now. Returns the source_files id; records failures."""
     with db.connect() as c:
@@ -196,9 +232,17 @@ def fetch_media(wa_id):
         raise LookupError("message not found")
     if MEDIA_KINDS.get(m["message_type"]) not in DOWNLOAD_KINDS:
         raise ValueError("only images and documents can be downloaded")
+    if window.low_disk():
+        raise DiskLow("not enough free space on the data volume")
+    limit = window.MEDIA_MAX_MB * 2**20
     try:
+        if (m["file_size"] or 0) > limit:
+            raise ValueError(f"over {window.MEDIA_MAX_MB} MB")
         data = evolution.media_base64(wa_id, m["group_jid"])
-        content = base64.b64decode(re.sub(r"^data:[^,]*,", "", data.get("base64") or ""))
+        b64 = re.sub(r"^data:[^,]*,", "", data.get("base64") or "")
+        if len(b64) * 3 // 4 > limit:
+            raise ValueError(f"over {window.MEDIA_MAX_MB} MB")
+        content = base64.b64decode(b64)
         if not content:
             raise RuntimeError("empty attachment")
         with db.connect() as c:
@@ -207,10 +251,48 @@ def fetch_media(wa_id):
             c.execute("INSERT OR REPLACE INTO media_fetch VALUES(?,?,?,?)", (wa_id, "ok", None, int(time.time())))
         return file_id
     except Exception as e:
+        status = "too_large" if str(e).startswith("over ") else "failed"
         with db.connect() as c:
             c.execute("INSERT OR REPLACE INTO media_fetch VALUES(?,?,?,?)",
-                      (wa_id, "failed", str(e)[:500], int(time.time())))
+                      (wa_id, status, str(e)[:500], int(time.time())))
         raise
+
+
+def free_space(log, days=None, jids=None):
+    """Delete downloaded attachments whose every post is older than the window, and the raw WhatsApp records of
+    old messages. What was read from them stays: message text, parsed sheet cells and PDF page text, suggestions
+    and decisions. Returns {files, mb, messages}."""
+    since = window.cutoff() if days is None else int(time.time() - days * 86400)
+    if not since:
+        log("INGEST_DAYS=0: nothing is old enough to remove")
+        return {"files": 0, "mb": 0, "messages": 0}
+    freed = n = 0
+    with db.connect() as c:
+        scope, args = "", []
+        if jids is not None:  # only files posted in these chats
+            marks = ",".join("?" * len(jids)) or "''"
+            scope = (" AND EXISTS (SELECT 1 FROM file_occurrences o2 JOIN source_messages m2 ON m2.wa_id=o2.wa_id "
+                     f"WHERE o2.file_id=f.id AND m2.group_jid IN ({marks}))")
+            args = list(jids)
+        old = c.execute("SELECT f.id, f.path, f.size FROM source_files f WHERE f.path IS NOT NULL AND NOT EXISTS ("
+                        "SELECT 1 FROM file_occurrences o JOIN source_messages m ON m.wa_id=o.wa_id "
+                        "WHERE o.file_id=f.id AND COALESCE(m.ts,0)>=?)" + scope, [since, *args]).fetchall()
+        for f in old:
+            try:
+                if f["path"] and os.path.exists(f["path"]):
+                    os.remove(f["path"])
+                    freed += f["size"] or 0
+                    n += 1
+            except OSError:
+                continue
+            c.execute("UPDATE source_files SET path=NULL, pruned_at=? WHERE id=?", (int(time.time()), f["id"]))
+        mscope = f" AND group_jid IN ({','.join('?' * len(jids)) or chr(39) * 2})" if jids is not None else ""
+        msgs = c.execute("UPDATE source_messages SET raw_json=NULL WHERE COALESCE(ts,0)<? AND raw_json IS NOT NULL"
+                         + mscope, [since, *(jids or [])]).rowcount
+    out = {"files": n, "mb": round(freed / 2**20, 1), "messages": msgs}
+    log(f"Freed {out['mb']} MB: {n} old attachment(s) deleted, raw records of {msgs} old message(s) cleared. "
+        f"Text, parsed cells, PDF text and suggestions are kept. {window.disk()['free_mb']} MB free now.")
+    return out
 
 
 def download_media(log, retry_failed=False, jids=None):
@@ -220,17 +302,29 @@ def download_media(log, retry_failed=False, jids=None):
         if not scoped:
             log("No chats ticked. Tick the inventory chat(s) on the Chats page first.")
             return 0, 0
-        q = ("SELECT wa_id, message_type, file_name, mimetype FROM source_messages m WHERE has_media=1 "
-             f"AND group_jid IN ({','.join('?' * len(scoped))}) "
-             "AND wa_id NOT IN (SELECT wa_id FROM file_occurrences)")
+        q = ("SELECT wa_id, message_type, file_name, mimetype, file_size FROM source_messages m WHERE has_media=1 "
+             f"AND group_jid IN ({','.join('?' * len(scoped))}) AND COALESCE(ts,0)>=? "
+             "AND wa_id NOT IN (SELECT wa_id FROM file_occurrences) "
+             "AND wa_id NOT IN (SELECT wa_id FROM media_fetch WHERE status='too_large')")
         if not retry_failed:
             q += " AND wa_id NOT IN (SELECT wa_id FROM media_fetch WHERE status='failed')"
-        todo = c.execute(q, scoped).fetchall()
-    wanted = [r["wa_id"] for r in todo if MEDIA_KINDS.get(r["message_type"]) in DOWNLOAD_KINDS]
-    skipped = len(todo) - len(wanted)
+        todo = c.execute(q + " ORDER BY ts DESC", [*scoped, window.cutoff()]).fetchall()  # newest first
+        big = [r["wa_id"] for r in todo if MEDIA_KINDS.get(r["message_type"]) in DOWNLOAD_KINDS
+               and (r["file_size"] or 0) > window.MEDIA_MAX_MB * 2**20]
+        for wa in big:
+            c.execute("INSERT OR REPLACE INTO media_fetch VALUES(?,?,?,?)",
+                      (wa, "too_large", f"over {window.MEDIA_MAX_MB} MB (MEDIA_MAX_MB)", int(time.time())))
+    wanted = [r["wa_id"] for r in todo if MEDIA_KINDS.get(r["message_type"]) in DOWNLOAD_KINDS and r["wa_id"] not in big]
+    skipped = len(todo) - len(wanted) - len(big)
     ok = failed = 0
+    if big:
+        log(f"{len(big)} attachment(s) over {window.MEDIA_MAX_MB} MB skipped (listed on Sources)")
+    if wanted and window.low_disk():
+        log(f"Downloads paused: only {window.disk()['free_mb']} MB free on the data volume "
+            f"(MIN_FREE_MB={window.MIN_FREE_MB}). Run 'Free space' in Pipeline or grow the volume.")
+        return 0, 0
     if wanted:
-        log(f"Downloading {len(wanted)} attachment(s), {DOWNLOAD_WORKERS} at a time")
+        log(f"Downloading {len(wanted)} attachment(s) from the {window.describe()}, {DOWNLOAD_WORKERS} at a time")
     from concurrent.futures import ThreadPoolExecutor, as_completed
     with ThreadPoolExecutor(DOWNLOAD_WORKERS) as pool:  # Evolution answers one media request at a time per call
         futures = [pool.submit(fetch_media, wa) for wa in wanted]
@@ -238,6 +332,11 @@ def download_media(log, retry_failed=False, jids=None):
             try:
                 f.result()
                 ok += 1
+            except DiskLow:
+                for other in futures:
+                    other.cancel()
+                log(f"Downloads paused: the data volume is down to {window.disk()['free_mb']} MB free")
+                break
             except Exception:
                 failed += 1
             if i % 25 == 0 or i == len(futures):

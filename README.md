@@ -39,6 +39,13 @@ Settings -> Networking -> Generate Domain and open it. **Start over** on Pipelin
 (every workbook/CSV cell and PDF page stored verbatim in `source_rows`) and proposes sheet updates. On their own:
 Propose sheet updates, Brain review, Eval, Retrain, Re-read skipped messages, Rule suggestions.
 
+**Reading window and disk:** only the last `INGEST_DAYS` days (default 7; `0` = everything) are pulled,
+downloaded and read by Claude. Attachments over `MEDIA_MAX_MB` (default 25) are skipped and listed on Sources;
+downloads pause while less than `MIN_FREE_MB` (default 1024) is free on `/data`. Pipeline > **Free space** deletes
+attachments posted only before the window and the raw WhatsApp records of old messages; message text, parsed
+cells, PDF text, suggestions and decisions stay. PDFs and images are sent to Claude in batches of at most
+`INGEST_BATCH_MB` (default 100) held in memory at a time. Pipeline shows free disk space.
+
 The old project/unit inventory (map projects, extract facts, review images, build inventory, and the Inventory,
 Review and Reconciliation screens) was removed; its tables are left untouched in existing databases.
 
