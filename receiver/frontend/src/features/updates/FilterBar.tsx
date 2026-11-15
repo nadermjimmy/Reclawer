@@ -1,4 +1,4 @@
-import { Keyboard, X } from "lucide-react";
+import { Download, Keyboard, X } from "lucide-react";
 import type { RefObject } from "react";
 import type { ProposalState, WarningCode } from "../../api/proposals";
 import { Chip, IconButton, SearchInput, Segmented, Select, WARNING_META } from "../../components";
@@ -46,6 +46,11 @@ export function FilterBar({ filters, query, onQuery, counts, warningCounts, shee
         <SearchInput ref={searchRef} label="Search project, developer or sheet name" placeholder="Search projects"
           className="filter-search" value={query} onChange={(e) => onQuery(e.target.value)} hint={<kbd>/</kbd>}
           onKeyDown={(e) => { if (e.key === "Escape") (e.target as HTMLInputElement).blur(); }} />
+        <a className="btn btn-secondary btn-sm" href="/api/suggestions/export.csv" download
+          title="Download every suggestion (open, approved, rejected, superseded) with its chat and the brain's verdict">
+          <span className="btn-icon" aria-hidden="true"><Download size={16} /></span>
+          <span className="btn-label">Export CSV</span>
+        </a>
         <IconButton label="Keyboard shortcuts (?)" icon={<Keyboard size={18} />} onClick={onHelp} className="hide-touch" />
       </div>
       <div className="filterbar-row" role="group" aria-label="Filters">
