@@ -148,6 +148,18 @@ def state_counts(c):
     return {s: got.get(s, 0) for s in STATES}
 
 
+@router.get("/suggestions/export.csv")
+def export_suggestions_csv():
+    """Every suggestion (all states) with its chat, quote, sheet row and the brain's verdict, as a CSV download
+    (read-only; same columns as export_suggestions.py)."""
+    import io, export_suggestions
+    buf = io.StringIO()
+    export_suggestions.main(db.DB, buf)
+    stamp = datetime.datetime.now(web.DUBAI).strftime("%Y-%m-%d")
+    return Response("\ufeff" + buf.getvalue(), media_type="text/csv; charset=utf-8",  # BOM: Excel shows Arabic
+                    headers={"Content-Disposition": f'attachment; filename="suggestions-{stamp}.csv"'})
+
+
 @router.get("/proposals")
 def list_proposals(state: str = "proposed", sheet: str = "", match: str = "", q: str = "", chat: str = "",
                    warning: str = "", sort: str = "project", cursor: str = "0", limit: int = 200):

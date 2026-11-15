@@ -134,3 +134,15 @@ def test_llm_replay_respects_budget(env):
            "field": "apartment_2", "value": "1/1,000,000"}] * 50
     r = run_eval.llm_replay(ex, 50, max_usd=0.01)
     assert "skipped" in r and r["estimated_usd"] > 0.01
+
+
+def test_suggestions_csv_export(env):
+    import csv, io
+    from fastapi.testclient import TestClient
+    import app
+    cl = TestClient(app.app, base_url="https://testserver")
+    cl.post("/api/login", json={"password": "pw"})
+    r = cl.get("/api/suggestions/export.csv")
+    assert r.status_code == 200 and "attachment" in r.headers["content-disposition"]
+    rows = list(csv.DictReader(io.StringIO(r.text.lstrip("﻿"))))
+    assert rows and {"chat_name", "brain_verdict", "row_project", "quote"} <= set(rows[0])
