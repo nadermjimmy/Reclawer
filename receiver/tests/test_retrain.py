@@ -96,7 +96,8 @@ def test_brain_metrics_endpoint(env):
     cl = TestClient(app_mod.app, base_url="https://testserver")
     cl.post("/api/login", json={"password": "pw"})
     r = cl.get("/api/brain/metrics", params={"refresh": True}).json()
-    assert set(r["models"]) == {"matcher", "noise"} and r["eval"]["matching_v2"]["all"] is not None
+    assert set(r["models"]) == {"matcher", "noise", "acceptance"} and r["eval"]["matching_v2"]["all"] is not None
+    assert set(r["gate"]) >= {"enabled", "tiers", "catalog", "lessons", "doubtful_assignments"}
     flags = {f["name"]: f for f in r["flags"]}
     assert flags["MATCHER"]["value"] == "legacy" and flags["NOISE_SKIP"]["value"] is None
     assert flags["TEMPLATES"]["value"] is False and flags["BRAIN_AUTO_APPROVE"]["value"] is True

@@ -13,7 +13,7 @@ Nothing here approves or rejects anything: the gate only sorts and explains. Tur
 (meta 'accuracy_gate'); the queues are always computed so the admin can compare before switching on.
 """
 import json, math, os, re, time, collections
-import cell_parse as cp, db, master, master_schema as ms, names, normalize
+import db, master, master_schema as ms, names, normalize
 
 N = normalize.normalize
 AED = re.compile(r"\baed\b|dirham|درهم|dubai|دبي|abu dhabi|ابوظبي|ابو ظبي|sharjah|الشارقه|ras al khaimah|\buae\b|"
@@ -97,6 +97,8 @@ class Context:
         self.lessons = lessons.load(c)
         self.model, self.model_ver = acceptance.model()
         self.groups = {r["jid"]: r["name"] for r in c.execute("SELECT jid, name FROM groups")}
+        imp = master.current_import(c)
+        self.imported_at = imp["imported_at"] if imp else 0
 
     def strip_dubai(self, text):
         for dn in self.cat.dubai_names:
@@ -162,8 +164,8 @@ def evaluate(c, p, ctx, row=None):
         cur_raw, cur = master.current(c, row["id"], field)
         if ms.same_value(field, cur, parsed):
             flags.append("already_on_sheet")
-        elif (orig_old(p) or "").strip() != (cur_raw or "").strip():
-            flags.append("old_value_changed")
+        elif (orig_old(p) or "").strip() != (cur_raw or "").strip() and (p["source_ts"] or 0) < ctx.imported_at:
+            flags.append("old_value_changed")  # the team's sheet changed this cell after the message was sent
         if p["match_state"] == "near":
             flags.append("near_name")
     else:

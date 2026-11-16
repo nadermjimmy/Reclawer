@@ -33,6 +33,7 @@ def env():
                                       (ORA, "Jiran launch 99/3,500,000"), (ORA, "ZED East 3 bed 140/30,000,000"),
                                       (ORA, "Brand new Sunrise Bay 2 bed 120/6,000,000"),
                                       (ORA, "Jiran 2 bed 99/3,600,000"), (ORA, "ZED East plan 20% 6 years"),
+                                      (ORA, "ZED East studio 60/3,500,000"),
                                       (BROKER, "Celestia 3 bed 110/5,400,000")]):
             c.execute("INSERT OR REPLACE INTO source_messages(wa_id,group_jid,ts,text) VALUES(?,?,?,?)",
                       (f"g{i}", jid, now - 500 + i, t))
@@ -153,3 +154,40 @@ def test_lessons_and_model(env, tmp_path, monkeypatch):
         assert p["p_approve"] is not None and p["tier"] == "check"       # learned: payment plans get rejected here
         assert "learned_warning" in g["flags"] or "low_probability" in g["flags"]
         assert g["contrib"]                                               # the signals behind the probability
+
+
+def test_api_gate_sheet_and_team_role(env, monkeypatch):
+    db, master = env
+    from fastapi.testclient import TestClient
+    import app, web
+    with db.connect() as c:
+        _add(c, master, "g7", ORA, "ZED East", "studio", "60/3,500,000")
+    cl = TestClient(app.app, base_url="https://testserver")
+    assert cl.post("/api/login", json={"password": "pw"}).json()["role"] == "admin"
+    import gate
+    gate.run()
+    assert cl.get("/api/me").json()["gate"] is True
+    g = cl.get("/api/settings/gate").json()
+    assert g["enabled"] and "ready" in g["tiers"]
+    assert cl.get("/api/proposals", params={"tier": "ready"}).json()["items"]
+    sheet = cl.get("/api/sheet", params={"sheet": "New Cairo", "view": "review"}).json()
+    assert sheet["gate"] and sheet["rows"] and all(r["ready"] for r in sheet["rows"])
+    cell = next(c for r in sheet["rows"] for c in r["cells"].values() if c.get("pending"))["pending"]
+    assert cell["tier"] == "ready" and "gate_reasons" in cell
+    row_id = sheet["rows"][0]["row_id"]
+    out = cl.post("/api/sheet/approve", json={"row_id": row_id}).json()
+    assert out["approved"] >= 1
+    csv_text = cl.get("/api/suggestions/export.csv").text
+    assert "queue" in csv_text.splitlines()[0] and "group_developer" in csv_text.splitlines()[0]
+    assert "doubtful" in cl.get("/api/brain/assignments").json()
+    up = cl.post("/api/catalog", files={"file": ("companies.csv", COMPANIES.encode(), "text/csv")}).json()
+    assert up["kind"] == "companies" and up["counts"]["companies"] == 5
+    # team login: decides, can't change the system
+    monkeypatch.setattr(web, "TEAM_PASSWORD", "teampw")
+    team = TestClient(app.app, base_url="https://testserver")
+    assert team.post("/api/login", json={"password": "teampw"}).json()["role"] == "team"
+    assert team.get("/api/me").json()["role"] == "team"
+    assert team.get("/api/sheet", params={"sheet": "New Cairo"}).status_code == 200
+    assert team.post("/api/reset", json={"confirm": "DELETE ALL"}).status_code == 403
+    assert team.put("/api/settings/gate", json={"enabled": False}).status_code == 403
+    assert team.post("/api/jobs/rematch").status_code == 403

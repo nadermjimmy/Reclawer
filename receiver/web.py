@@ -7,6 +7,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 import brain, db, proposals
 
 PASSWORD = os.getenv("APP_PASSWORD", "")
+TEAM_PASSWORD = os.getenv("APP_TEAM_PASSWORD", "")  # optional: the team logs in with this and sees the simple app
 SECRET = (os.getenv("SESSION_SECRET") or PASSWORD or "unset").encode()
 COOKIE = "bridge_session"
 PUBLIC = ("/health", "/webhook/", "/sync-groups/", "/static/")
@@ -20,10 +21,31 @@ def _sign(exp):
     return hmac.new(SECRET, str(exp).encode(), hashlib.sha256).hexdigest()
 
 
+def _sign_role(exp, role):
+    return _sign(exp) if role == "admin" else hmac.new(SECRET, f"{exp}.{role}".encode(), hashlib.sha256).hexdigest()
+
+
+def role_of(request):
+    """'admin' or 'team' for a valid session, else None (older cookies without a role are admin)."""
+    parts = request.cookies.get(COOKIE, "").split(".")
+    if len(parts) == 2:
+        exp, role, sig = parts[0], "admin", parts[1]
+    elif len(parts) == 3:
+        exp, role, sig = parts
+    else:
+        return None
+    if role not in ("admin", "team") or not exp.isdigit() or int(exp) <= time.time():
+        return None
+    return role if hmac.compare_digest(sig, _sign_role(exp, role)) else None
+
+
 def logged_in(request):
-    token = request.cookies.get(COOKIE, "")
-    exp, _, sig = token.partition(".")
-    return exp.isdigit() and int(exp) > time.time() and hmac.compare_digest(sig, _sign(exp))
+    return role_of(request) is not None
+
+
+# the team login can review and decide, not change the system
+ADMIN_ONLY = (("POST", "/api/reset"), ("POST", "/api/master"), ("POST", "/api/catalog"), ("PUT", "/api/settings/"),
+              ("POST", "/api/jobs/"), ("POST", "/api/master/issues/"))
 
 
 def _spa_shell(path):
@@ -40,19 +62,29 @@ async def auth_middleware(request: Request, call_next):
     if not PASSWORD:
         msg = "Set APP_PASSWORD on the receiver service to enable the web app."
         return JSONResponse({"error": "no_password", "detail": msg}, 503) if is_api else HTMLResponse(msg, 503)
-    if not logged_in(request):
+    role = role_of(request)
+    if not role:
         return JSONResponse({"error": "login"}, 401) if is_api else RedirectResponse("/app", 303)
+    if role == "team" and any(request.method == m and (path == p or (p.endswith("/") and path.startswith(p)))
+                              for m, p in ADMIN_ONLY):
+        return JSONResponse({"error": "admin_only", "detail": "Only the admin login can do this."}, 403)
     return await call_next(request)
 
 
 def password_ok(password):
-    return bool(PASSWORD) and hmac.compare_digest(password or "", PASSWORD)
+    """The role this password logs in as ('admin' / 'team'), or None."""
+    if PASSWORD and hmac.compare_digest(password or "", PASSWORD):
+        return "admin"
+    if TEAM_PASSWORD and hmac.compare_digest(password or "", TEAM_PASSWORD):
+        return "team"
+    return None
 
 
-def set_session(r):
+def set_session(r, role="admin"):
     """Attach a signed 14-day session cookie."""
     exp = int(time.time()) + 14 * 86400
-    r.set_cookie(COOKIE, f"{exp}.{_sign(exp)}", max_age=14 * 86400, httponly=True, secure=True, samesite="lax")
+    token = f"{exp}.{_sign(exp)}" if role == "admin" else f"{exp}.{role}.{_sign_role(exp, role)}"
+    r.set_cookie(COOKIE, token, max_age=14 * 86400, httponly=True, secure=True, samesite="lax")
     return r
 
 
@@ -70,6 +102,21 @@ def _requeue_noise(log):
 def _retrain_job(log):
     import retrain
     retrain.run(log, force=True, reason="manual")
+
+
+def _rematch(log):
+    import rematch
+    rematch.run(log)
+
+
+def _gate_sort(log):
+    import gate
+    gate.run(log)
+
+
+def _lessons(log):
+    import lessons
+    lessons.mine(log)
 
 
 def _uae_preview(log):
@@ -111,6 +158,13 @@ STEPS = [
     ("retrain", "Retrain matcher + noise filter (no LLM)", "Train both models on every person decision, re-run the "
      "eval and promote a model only if it does at least as well. Runs nightly by itself when 25+ new labels exist.",
      _retrain_job),
+    ("rematch", "Re-match suggestions (no LLM)", "Point every open suggestion (and the ones the last master upload "
+     "closed) at the current master; with the accuracy gate on, each stays with its group's own developer.",
+     _rematch),
+    ("gate_sort", "Sort into queues (no LLM)", "Put every open suggestion in Ready / Check / New / Hidden with the "
+     "reasons, using the catalog, the team's sheet, the lessons and the approval model.", _gate_sort),
+    ("lessons", "Learn lessons (no LLM unless LESSONS_LLM=1)", "Recompute what the team's decisions teach per group, "
+     "developer and column.", _lessons),
     ("requeue_noise", "Re-read skipped messages", "Put every text message the noise filter skipped back in the "
      "queue; the next sheet-update read sends them to Claude.", _requeue_noise),
     ("uae_preview", "Preview UAE developer chats (no change)", "List the groups of UAE developers "

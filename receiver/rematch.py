@@ -5,7 +5,7 @@ team's current value) instead of being thrown away, and with the accuracy gate o
 group's own developer. Suggestions the new master already contains, or that a better source already filled, stay
 closed. Only one open suggestion per cell survives (the newest), as always.
 """
-import sqlite3, time
+import sqlite3
 import db, master, window
 from gate import CHAT_SQL
 

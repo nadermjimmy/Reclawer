@@ -14,7 +14,7 @@ Multi-signal and weighted:
 Promotion and retraining go through retrain.py (a new model replaces the current one only if it does at least as
 well on the newest decisions). Nothing here approves anything.
 """
-import collections, json, math, os, time
+import collections, math, time
 import db, models, names
 
 KIND = "acceptance"
