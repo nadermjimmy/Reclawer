@@ -27,7 +27,7 @@ WhatsApp groups -> Evolution API (Railway, public) -> receiver (Railway, private
 The receiver serves a password-protected web app at `/app` (the root URL opens it). Navigation, in order:
 **Chats**, **Insights**, **Sheet** (the master as a Google-Sheets-like grid with approvals and open suggestions),
 **Updates** (the review queue), then **Master** and More (**Pipeline**, **Sources**, **Brain**). Code: `receiver/`
-(API in `api.py`, React app in `receiver/frontend/`).
+(API in `api.py`, React app in `receiver/frontend/`). The team login (`APP_TEAM_PASSWORD`) sees Sheet and Chats only.
 
 **Setup (once):** on the `receiver` service add variables `APP_PASSWORD`, `EVOLUTION_URL` (the Evolution
 https domain), `EVOLUTION_API_KEY` (Evolution's `AUTHENTICATION_API_KEY`), `EVOLUTION_INSTANCE` (the instance
@@ -192,3 +192,38 @@ group's assigned projects. Models never write to the sheet; every change goes th
 Suggested order to enable: run Pipeline > Retrain and Eval; `MATCHER=shadow` for a few days; compare legacy vs
 unified on More > Brain; then `MATCHER=v2`, `BRAIN_MATCHER=v2`, `EXTRACTION_CACHE=1`, `FEWSHOT=1`; set `MATCH_AUTO`
 from the trainer's suggestion; `GUARDS_V2=1`; `NOISE_SKIP` last.
+
+## Accuracy gate, catalog, team login and learning
+
+**Off by default.** Switch: More > Brain > "Accuracy gate". Turning it on starts a background job that re-matches
+every open suggestion (about 5 minutes for 5,000) and sorts them. Off = everything behaves as before.
+
+- **Catalog** (Master > Byit app catalog): upload the app's `companies.csv` and `projects.csv` (either order; the
+  header tells which). Used to know which developer owns which project and which names are companies, not projects.
+- **Developer lock** (gate on): a suggestion from a group goes only to that group's developer's rows (the team's
+  assignment first, else the catalog / group name). It never lands on another developer's row.
+- **Queues** (`gate.py`), shown on Updates (Queue filter) and on Sheet:
+  - **Ready**: own developer's existing row, exact name, value in the sheet's format, sane price per m², not already
+    on the sheet, no learned warning and, once trained, approval chance ≥ `READY_P` (default 0.9);
+  - **Check**: near name, big price change, catalog says another developer, older value changed on the sheet, …;
+  - **New**: a project that isn't on the sheet (a catalog task, not daily work);
+  - **Hidden**: UAE (AED / sq ft / "Byit App / X" groups), another developer's row, already on the sheet, AED-scale
+    price. Kept for learning and for the admin.
+  Each suggestion carries its reasons. The gate only sorts; it never approves or rejects.
+- **Re-match on upload**: every master upload re-points open suggestions at the new rows and re-sorts them.
+- **Sheet review mode**: with the gate on, Sheet opens on "Ready to approve": Ready cells are light blue and show
+  the suggested value. Click a cell: Approve, Approve Row, Approve All Ready of a developer, or Reject with a reason
+  (wrong project / wrong value / not an offer / duplicate).
+- **Team login**: set `APP_TEAM_PASSWORD` on the `receiver` service. That password opens only Sheet and Chats;
+  admin pages and endpoints return 403. `APP_PASSWORD` stays the admin login.
+- **Doubtful assignments** (More > Brain): team-assigned groups with a UAE-style name, a developer that is neither
+  in the catalog nor on the master, or a group name that points to another company.
+- **Approval model** (`acceptance.py`): about 45 signals per suggestion (match quality, source, price per m² vs the
+  sheet, the developer's / group's / column's past approval rates, …). Logistic regression from 30 decisions,
+  LightGBM from 300, calibrated, with recent decisions weighted more (60-day half-life). Retrained with the other
+  models (Pipeline: Retrain); promoted only if it is no worse. Each suggestion shows the signals that moved it most.
+- **Lessons memory** (`lessons.py`): weighted statements mined from decisions per group, developer, column, source
+  and gate reason ("Suggestions for Studio in X were rejected 7 of 9 times, mostly wrong value"). Strong reject
+  lessons move a suggestion to Check, and (gate on) the lessons for a group's developer are given to Claude when it
+  reads that group. `LESSONS_LLM=1` lets Claude rewrite them as one practical sentence; counts stay computed.
+- **Export**: Updates > Export CSV includes queue, approval chance and reasons.

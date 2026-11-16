@@ -4,6 +4,7 @@ import { ApiError, errorText } from "../../api/client";
 import {
   exportUrl, getMaster, listIssues, resolveIssue, uploadMaster, type IssueAction, type MasterInfo, type MasterIssue, type MasterSummary,
 } from "../../api/master";
+import { getCatalog, uploadCatalog } from "../../api/brain";
 import { JOB_FINISHED, useJobs } from "../../app/jobs";
 import { useSession } from "../../app/session";
 import { usePageTitle } from "../../app/title";
@@ -39,6 +40,50 @@ function Dropzone({ disabled, reason, onFile }: { disabled: boolean; reason?: st
           if (f) onFile(f);
         }} />
     </div>
+  );
+}
+
+/** The Byit app catalog: which developer owns which project. The accuracy gate checks suggestions against it. */
+function CatalogCard() {
+  const toast = useToast();
+  const info = useLoad(getCatalog, []);
+  const [busy, setBusy] = useState(false);
+  const input = useRef<HTMLInputElement>(null);
+  const onFile = async (f: File) => {
+    setBusy(true);
+    try {
+      const r = await uploadCatalog(f);
+      toast.show({ tone: "success", message: `Catalog ${r.kind}: ${fmtNumber(r.rows)} rows read.` });
+      void info.reload();
+    } catch (e) {
+      toast.show({ tone: "error", message: errorText(e, "Couldn't read that file.") });
+    } finally {
+      setBusy(false);
+    }
+  };
+  const c = info.data;
+  return (
+    <Card id="catalog" eyebrow="Byit app catalog" title="Developers and Projects">
+      <div className="stack">
+        <p className="small muted">
+          Upload the companies and projects exports from the Byit app (CSV, one at a time). The app uses them to know
+          which developer owns which project, so suggestions never land on another developer's row.
+        </p>
+        {c && (
+          <div className="stats">
+            <Stat value={fmtNumber(c.companies)} label="Developers" />
+            <Stat value={fmtNumber(c.projects)} label="Projects" />
+          </div>
+        )}
+        <div>
+          <Button variant="secondary" icon={<Upload size={16} />} disabled={busy} onClick={() => input.current?.click()}>
+            {busy ? "Reading…" : "Upload companies.csv or projects.csv"}
+          </Button>
+          <input ref={input} type="file" accept=".csv,text/csv" hidden
+            onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ""; if (f) void onFile(f); }} />
+        </div>
+      </div>
+    </Card>
   );
 }
 
@@ -189,7 +234,7 @@ export function MasterScreen() {
         {m.import && (
           <p className="caption muted">
             Upload the latest team file after you've applied an export, so new suggestions compare against it.
-            {openSuggestions > 0 && ` Replacing closes the ${fmtNumber(openSuggestions)} open suggestions.`}
+            {openSuggestions > 0 && ` The ${fmtNumber(openSuggestions)} open suggestions are re-matched to the new file, not lost.`}
           </p>
         )}
       </div>
@@ -270,6 +315,7 @@ export function MasterScreen() {
             </div>
           </Card>
           {uploadCard}
+          <CatalogCard />
         </div>
       )}
 

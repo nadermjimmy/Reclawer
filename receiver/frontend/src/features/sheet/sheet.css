@@ -734,3 +734,55 @@
     border-width: 1px;
   }
 }
+
+/* ---------- accuracy gate: Ready suggestions (light blue, blue corner) vs Check (yellow, note corner) ---------- */
+.sg-row > .sg-cell.is-ready {
+  background: #e8f0fe;
+}
+.sg-cell.is-ready::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: 0;
+  border-style: solid;
+  border-width: 0 7px 7px 0;
+  border-color: transparent var(--gs-blue, #1a73e8) transparent transparent;
+  pointer-events: none;
+}
+.sg-row > .sg-cell.is-brain {
+  background: #f3e8fd;
+}
+.sg-key.is-ready {
+  background: #e8f0fe;
+}
+.sg-key.is-brain {
+  background: #f3e8fd;
+}
+.sv-gate {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: var(--grey-100);
+}
+.sv-gate .row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.sv-reasons {
+  margin: 0;
+  padding-left: 1.1rem;
+}
+.sv-reject {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+.sg-cell.is-sugg-shown .sg-txt {
+  color: #0b57d0;
+  font-weight: 600;
+}

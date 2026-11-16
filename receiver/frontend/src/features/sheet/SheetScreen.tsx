@@ -2,9 +2,9 @@ import { Check, Download, FileSpreadsheet, RotateCcw, Sparkles, X } from "lucide
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useSearchParams } from "react-router-dom";
 import { errorText } from "../../api/client";
-import { decide, reopen } from "../../api/proposals";
-import { getSheet, type SheetCell, type SheetChange, type SheetColumn, type SheetData, type SheetRow, type SheetView } from "../../api/sheet";
-import { Button, ButtonLink, Drawer, EmptyState, ErrorBanner, SearchInput, Segmented, Skeleton, useToast } from "../../components";
+import { REJECT_REASONS, decide, reopen } from "../../api/proposals";
+import { approveReady, getSheet, type SheetCell, type SheetChange, type SheetColumn, type SheetData, type SheetRow, type SheetView } from "../../api/sheet";
+import { Button, ButtonLink, ConfirmDialog, Drawer, EmptyState, ErrorBanner, Pill, SearchInput, Segmented, Skeleton, useToast } from "../../components";
 import { useIsPhone } from "../../lib/hooks";
 import { fmtDateTime, relTime } from "../../lib/format";
 import { useSession } from "../../app/session";
@@ -15,6 +15,7 @@ import "./sheet.css";
 
 interface Picked { row: SheetRow; col: SheetColumn; cell: SheetCell }
 
+const READY_VIEW: { key: SheetView; label: string } = { key: "review", label: "Ready to approve" };
 const VIEWS: { key: SheetView; label: string }[] = [
   { key: "all", label: "All rows" },
   { key: "changed", label: "With changes" },
@@ -37,7 +38,11 @@ export function SheetScreen() {
   const { me } = useSession();
   const [params, setParams] = useSearchParams();
   const sheet = params.get("sheet") ?? "";
-  const [view, setView] = useState<SheetView>("all");
+  const [view, setView] = useState<SheetView>(me?.gate ? "review" : "all");
+  const chosen = useRef(false);
+  useEffect(() => {  // the gate's Ready view is the default once we know the gate is on
+    if (me?.gate && !chosen.current) setView("review");
+  }, [me?.gate]);
   const [shown, setShown] = useState<Shown>("current");
   const [query, setQuery] = useState("");
   const [q, setQ] = useState("");
@@ -144,7 +149,8 @@ export function SheetScreen() {
   } else if (!rows.length) {
     body = (
       <div className="sg-message">
-        <EmptyState title={q ? `No rows match "${q}"` : view === "all" ? "No rows on this sheet" : "No rows with changes here"}
+        <EmptyState title={q ? `No rows match "${q}"` : view === "review" ? "Nothing ready to approve on this sheet"
+          : view === "all" ? "No rows on this sheet" : "No rows with changes here"}
           actions={filtered ? (
             <Button variant="secondary" onClick={() => { setView("all"); setQuery(""); }}>Show all rows</Button>
           ) : undefined} />
@@ -153,7 +159,7 @@ export function SheetScreen() {
   } else {
     body = (
       <SheetGrid rows={rows} cols={cols} widths={widths} shown={shown} phone={phone} sel={sel} resetKey={data.sheet}
-        label={`${data.sheet} sheet`} gridRef={gridRef} onSelect={setSel} onOpen={open} onCopy={copy}
+        label={`${data.sheet} sheet`} gridRef={gridRef} onSelect={setSel} onOpen={open} onCopy={copy} showSuggested={view === "review"}
         onFind={() => { searchRef.current?.focus(); searchRef.current?.select(); }} />
     );
   }
@@ -176,7 +182,8 @@ export function SheetScreen() {
         )}
       </div>
       <div className="sg-toolbar">
-        <Segmented label="Rows" items={VIEWS} value={view} onChange={setView} size="sm" />
+        <Segmented label="Rows" items={me?.gate ? [READY_VIEW, ...VIEWS] : VIEWS} value={view}
+          onChange={(v) => { chosen.current = true; setView(v); }} size="sm" />
         <span className="sg-sep" aria-hidden="true" />
         <Segmented label="Values" items={VALUES} value={shown} onChange={setShown} size="sm" />
         <span className="sg-sep" aria-hidden="true" />
@@ -211,7 +218,7 @@ export function SheetScreen() {
       <Drawer open={Boolean(picked)} onClose={() => setPicked(null)}
         eyebrow={picked ? `${activeSheet} · ${address(picked.col, picked.row)} · ${picked.row.row_number ? `Row ${picked.row.row_number}` : "New row"}` : ""}
         title={picked ? `${picked.row.cells.project?.master || "Untitled row"} · ${picked.col.label}` : ""}>
-        {picked && <Details picked={picked} busy={busy} act={act} />}
+        {picked && <Details picked={picked} busy={busy} act={act} sheet={activeSheet} />}
       </Drawer>
     </div>
   );
@@ -222,7 +229,9 @@ function Legend({ data }: { data: SheetData }) {
     <div className="sg-legend caption" aria-label="Legend">
       <span><i className="sg-key is-approved" /> Approved <b className="tnum">{data.counts.approved_cells}</b></span>
       <span><i className="sg-key is-brain" /> By brain</span>
-      <span><i className="sg-key is-pending" /> Open suggestion <b className="tnum">{data.counts.pending_cells}</b></span>
+      {data.gate && <span><i className="sg-key is-ready" /> Ready <b className="tnum">{data.counts.ready_cells ?? 0}</b></span>}
+      <span><i className="sg-key is-pending" /> {data.gate ? "Check" : "Open suggestion"} <b className="tnum">
+        {data.gate ? data.counts.pending_cells - (data.counts.ready_cells ?? 0) : data.counts.pending_cells}</b></span>
       {data.counts.suggested_new_rows > 0 && (
         <span><i className="sg-key is-newrow" /> New row <b className="tnum">{data.counts.suggested_new_rows}</b></span>
       )}
@@ -275,8 +284,31 @@ function FormulaBar({ row, col, shown, onOpen }: { row?: SheetRow; col?: SheetCo
   );
 }
 
-function Details({ picked, busy, act }: { picked: Picked; busy: boolean; act: (fn: () => Promise<unknown>, done: string) => Promise<void> }) {
+function GateInfo({ ch }: { ch: SheetChange }) {
+  if (!ch.tier) return null;
+  const label = { ready: "Ready", check: "Check", new: "New project", hidden: "Hidden" }[ch.tier];
+  const tone = ch.tier === "ready" ? "positive" : ch.tier === "hidden" ? "negative" : "orange";
+  return (
+    <div className="sv-gate">
+      <div className="row">
+        <Pill tone={tone} dot>{label}</Pill>
+        {ch.p_approve != null && <span className="small">Approval chance <b className="tnum">{Math.round(ch.p_approve * 100)}%</b></span>}
+      </div>
+      {(ch.gate_reasons ?? []).length > 0 && (
+        <ul className="sv-reasons small">{(ch.gate_reasons ?? []).map((r) => <li key={r}>{r}</li>)}</ul>
+      )}
+      {(ch.gate_signals ?? []).length > 0 && (
+        <p className="caption muted">Learned signals: {(ch.gate_signals ?? []).map(([s, v]) => `${v > 0 ? "+" : "−"} ${s}`).join(" · ")}</p>
+      )}
+    </div>
+  );
+}
+
+function Details({ picked, busy, act, sheet }: { picked: Picked; busy: boolean; sheet: string;
+  act: (fn: () => Promise<unknown>, done: string) => Promise<void> }) {
   const { cell, row, col } = picked;
+  const [bulk, setBulk] = useState(false);
+  const developer = row.cells.developer?.master ?? "";
   const dateCol = isDateCol(col);
   const fmt = (v: string) => (dateCol ? fmtDateLong(v) : v);
   return (
@@ -303,11 +335,35 @@ function Details({ picked, busy, act }: { picked: Picked; busy: boolean; act: (f
       )}
       {cell.pending && (
         <ChangeBlock title={`Open suggestion${cell.pending.count > 1 ? ` (newest of ${cell.pending.count})` : ""}`} ch={cell.pending}>
-          <Button variant="primary" size="sm" icon={<Check size={14} />} disabled={busy || cell.pending.row_new}
-            title={cell.pending.row_new ? "New rows are approved on Updates, where you choose the sheet" : undefined}
-            onClick={() => void act(() => decide([cell.pending!.proposal_id], "approve"), "Approved")}>Approve</Button>
-          <Button variant="ghost" size="sm" icon={<X size={14} />} disabled={busy}
-            onClick={() => void act(() => decide([cell.pending!.proposal_id], "reject"), "Rejected")}>Reject</Button>
+          <GateInfo ch={cell.pending} />
+          <div className="row">
+            <Button variant="primary" size="sm" icon={<Check size={14} />} disabled={busy || cell.pending.row_new}
+              title={cell.pending.row_new ? "New rows are approved on Updates, where you choose the sheet" : undefined}
+              onClick={() => void act(() => decide([cell.pending!.proposal_id], "approve"), "Approved")}>Approve</Button>
+            {row.row_id != null && (row.ready ?? 0) > 1 && (
+              <Button variant="secondary" size="sm" disabled={busy}
+                onClick={() => void act(() => approveReady({ row_id: row.row_id! }), `Approved the row's ${row.ready} ready suggestions`)}>
+                Approve Row ({row.ready} Ready)</Button>
+            )}
+            {developer && cell.pending.tier === "ready" && (
+              <Button variant="ghost" size="sm" disabled={busy} onClick={() => setBulk(true)}>Approve All Ready of {developer}</Button>
+            )}
+          </div>
+          <div className="sv-reject" role="group" aria-label="Reject with a reason">
+            <span className="caption muted"><X size={12} aria-hidden="true" /> Reject:</span>
+            {REJECT_REASONS.map((r) => (
+              <Button key={r.key} variant="ghost" size="sm" disabled={busy}
+                onClick={() => void act(() => decide([cell.pending!.proposal_id], "reject", undefined, r.key), `Rejected: ${r.label.toLowerCase()}`)}>
+                {r.label}</Button>
+            ))}
+          </div>
+          {sheet && developer && (
+            <ConfirmDialog open={bulk} title={`Approve every Ready suggestion of ${developer}?`} confirmLabel="Approve All Ready"
+              busy={busy} onCancel={() => setBulk(false)}
+              onConfirm={() => { setBulk(false); void act(() => approveReady({ developer, sheet }), `Approved ${developer}'s ready suggestions`); }}>
+              <p className="small">Only suggestions in the Ready queue on {sheet} are approved. Anything in Check stays for its own look.</p>
+            </ConfirmDialog>
+          )}
           <ButtonLink to={`/updates?q=${encodeURIComponent(row.cells.project?.master ?? "")}`} variant="ghost" size="sm">Open in Updates</ButtonLink>
         </ChangeBlock>
       )}

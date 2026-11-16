@@ -4,7 +4,7 @@ import { NavLink, Outlet, useLocation } from "react-router-dom";
 import { PaletteTrigger } from "../features/palette";
 import { counter, routeFade } from "../motion";
 import { JobPill } from "./jobs";
-import { MORE_NAV, PRIMARY_NAV, type NavItem } from "./nav";
+import { MORE_NAV, PRIMARY_NAV, TEAM_NAV, type NavItem } from "./nav";
 import { useSession } from "./session";
 import { usePageTitleValue } from "./title";
 
@@ -71,17 +71,23 @@ export function Shell() {
   const location = useLocation();
   const moreActive = location.pathname.startsWith("/more");
   const moreBadge = useMoreBadge();
+  const team = me?.role === "team";
+  const primary = team ? TEAM_NAV : PRIMARY_NAV;
   return (
     <div className="shell">
       <nav className="rail" aria-label="Main">
         <div className="rail-brand" aria-hidden="true">Byit</div>
         <div className="rail-group">
-          {PRIMARY_NAV.map((i) => <RailLink key={i.to} item={i} />)}
+          {primary.map((i) => <RailLink key={i.to} item={i} />)}
         </div>
-        <div className="rail-sep" />
-        <div className="rail-group">
-          {MORE_NAV.map((i) => <RailLink key={i.to} item={i} />)}
-        </div>
+        {!team && (
+          <>
+            <div className="rail-sep" />
+            <div className="rail-group">
+              {MORE_NAV.map((i) => <RailLink key={i.to} item={i} />)}
+            </div>
+          </>
+        )}
         <div className="spacer" />
         <button type="button" className="rail-link" onClick={() => void logout()} aria-label="Log out" data-tip="Log out">
           <LogOut size={20} aria-hidden="true" />
@@ -104,14 +110,21 @@ export function Shell() {
         </main>
       </div>
       <nav className="tabbar" aria-label="Main">
-        {PRIMARY_NAV.filter((i) => !i.railOnly).map((i) => <TabLink key={i.to} item={i} />)}
-        <NavLink to="/more" className={`tab-link${moreActive ? " is-active" : ""}`}>
-          <span className="tab-icon">
-            <Ellipsis size={22} aria-hidden="true" />
-            <Badge n={moreBadge} />
-          </span>
-          <span className="tab-label">More</span>
-        </NavLink>
+        {primary.filter((i) => !i.railOnly).map((i) => <TabLink key={i.to} item={i} />)}
+        {team ? (
+          <button type="button" className="tab-link" onClick={() => void logout()}>
+            <span className="tab-icon"><LogOut size={22} aria-hidden="true" /></span>
+            <span className="tab-label">Log Out</span>
+          </button>
+        ) : (
+          <NavLink to="/more" className={`tab-link${moreActive ? " is-active" : ""}`}>
+            <span className="tab-icon">
+              <Ellipsis size={22} aria-hidden="true" />
+              <Badge n={moreBadge} />
+            </span>
+            <span className="tab-label">More</span>
+          </NavLink>
+        )}
       </nav>
     </div>
   );

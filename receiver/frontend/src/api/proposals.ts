@@ -69,6 +69,8 @@ export interface ProposalList {
   next_cursor: string | null;
   has_master: boolean;
   sheets: string[];
+  tier_counts?: Record<string, number>;
+  gate?: boolean;
 }
 
 export interface ProposalFilters {
@@ -81,6 +83,7 @@ export interface ProposalFilters {
   sort?: "project" | "newest" | "warnings";
   cursor?: string;
   limit?: number;
+  tier?: string;
 }
 
 export interface ContextMessage {

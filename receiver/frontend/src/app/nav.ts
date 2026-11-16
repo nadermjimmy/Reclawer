@@ -20,6 +20,12 @@ export const PRIMARY_NAV: NavItem[] = [
   { to: "/master", label: "Master", icon: FileSpreadsheet, badge: "rows_to_place", railOnly: true },
 ];
 
+/** The team login's whole app: their sheet first, then the chats behind it. */
+export const TEAM_NAV: NavItem[] = [
+  { to: "/sheet", label: "Sheet", icon: Sheet },
+  { to: "/chats", label: "Chats", icon: MessagesSquare },
+];
+
 /** Under More (also listed in the desktop rail). */
 export const MORE_NAV: NavItem[] = [
   { to: "/more/pipeline", label: "Pipeline", icon: Workflow },

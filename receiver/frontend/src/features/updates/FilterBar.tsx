@@ -11,6 +11,8 @@ export interface Filters {
   chat: string;
   warning: string;
   sort: "project" | "newest" | "warnings";
+  /** Accuracy gate queue (ready / check / new / hidden), '' = all. */
+  tier: string;
 }
 
 export const STATE_TABS: { key: ProposalState; label: string }[] = [
@@ -22,7 +24,10 @@ export const STATE_TABS: { key: ProposalState; label: string }[] = [
 
 const WARNING_ORDER: WarningCode[] = ["near_match", "lifts_hold", "needs_sheet", "bad_format", "new_project"];
 
-export function FilterBar({ filters, query, onQuery, counts, warningCounts, sheets, onChange, searchRef, filtersRef, onHelp, chatName }: {
+export function FilterBar({ filters, query, onQuery, counts, warningCounts, sheets, onChange, searchRef, filtersRef, onHelp, chatName,
+  tierCounts, gate }: {
+  tierCounts?: Record<string, number>;
+  gate?: boolean;
   filters: Filters;
   query: string;
   onQuery: (q: string) => void;
@@ -36,7 +41,7 @@ export function FilterBar({ filters, query, onQuery, counts, warningCounts, shee
   chatName?: string | null;
 }) {
   const active = new Set(filters.warning.split(",").filter(Boolean));
-  const anyFilter = Boolean(filters.sheet || filters.match || filters.q || filters.chat || filters.warning);
+  const anyFilter = Boolean(filters.sheet || filters.match || filters.q || filters.chat || filters.warning || filters.tier);
   return (
     <div className="filterbar">
       <div className="filterbar-top">
@@ -59,6 +64,15 @@ export function FilterBar({ filters, query, onQuery, counts, warningCounts, shee
           <option value="">All sheets</option>
           {sheets.map((s) => <option key={s} value={s}>{s}</option>)}
         </Select>
+        {gate && (
+          <Select label="Queue" hideLabel value={filters.tier} onChange={(e) => onChange({ tier: e.target.value })} className="filter-select">
+            <option value="">All queues</option>
+            <option value="ready">Ready ({tierCounts?.ready ?? 0})</option>
+            <option value="check">Check ({tierCounts?.check ?? 0})</option>
+            <option value="new">New projects ({tierCounts?.new ?? 0})</option>
+            <option value="hidden">Hidden ({tierCounts?.hidden ?? 0})</option>
+          </Select>
+        )}
         <Select label="Match" hideLabel value={filters.match} onChange={(e) => onChange({ match: e.target.value })} className="filter-select">
           <option value="">Any match</option>
           <option value="exact">Exact name</option>
@@ -94,7 +108,7 @@ export function FilterBar({ filters, query, onQuery, counts, warningCounts, shee
           </Chip>
         )}
         {anyFilter && (
-          <button type="button" className="link-btn" onClick={() => { onQuery(""); onChange({ sheet: "", match: "", q: "", chat: "", warning: "" }); }}>
+          <button type="button" className="link-btn" onClick={() => { onQuery(""); onChange({ sheet: "", match: "", q: "", chat: "", warning: "", tier: "" }); }}>
             Clear filters
           </button>
         )}

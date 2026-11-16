@@ -1,4 +1,4 @@
-import { get, request } from "./client";
+import { get, request, upload } from "./client";
 
 /** Phase 7: More > Brain. Read-only view of models, eval, LLM share, cost and flags. */
 export interface ModelInfo {
@@ -30,8 +30,18 @@ export interface RuleSuggestions {
   locations: { name: string; rejections: number }[];
   blocklist_terms: { term: string; in_rejected: number; cluster_size: number; example: string }[];
 }
+export interface GateBlock {
+  enabled: boolean;
+  tiers: Record<string, number>;
+  catalog: { companies: number; projects: number };
+  ready_approval_rate: number | null;
+  ready_decided: number;
+  lessons: { text: string; outcome: "approved" | "rejected"; support: number; rate: number; weight: number }[];
+  doubtful_assignments: number;
+}
 export interface BrainMetrics {
-  models: { matcher: ModelInfo; noise: ModelInfo };
+  models: { matcher: ModelInfo; noise: ModelInfo; acceptance: ModelInfo };
+  gate: GateBlock;
   eval: EvalSummary | null;
   llm: {
     suggestions: number; reviewed_by_brain_llm: number; placed_by_matcher: number; share_reaching_brain_llm: number | null;
@@ -64,3 +74,18 @@ export const saveTemplate = (fileId: number, sheet: string, mapping: Record<stri
   request<SheetTemplate>(`/sources/files/${fileId}/template`, {
     method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sheet, mapping }),
   });
+
+/** Accuracy gate switch. Turning it on starts a job that re-matches open suggestions with the developer lock. */
+export const getGate = () => get<{ enabled: boolean; tiers: Record<string, number> }>("/settings/gate");
+export const setGate = (enabled: boolean) =>
+  request<{ enabled: boolean; tiers: Record<string, number>; job_id: number | null }>("/settings/gate", {
+    method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled }),
+  });
+
+/** Byit app catalog (companies.csv / projects.csv). */
+export const getCatalog = () => get<{ companies: number; projects: number }>("/catalog");
+export const uploadCatalog = (file: File) =>
+  upload<{ kind: "companies" | "projects"; rows: number; counts: { companies: number; projects: number } }>("/catalog", file);
+
+export interface DoubtfulAssignment { jid: string; group: string; developer: string; why: string[] }
+export const getAssignmentAudit = () => get<{ doubtful: DoubtfulAssignment[] }>("/brain/assignments");

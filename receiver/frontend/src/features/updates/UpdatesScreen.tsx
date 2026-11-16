@@ -61,6 +61,7 @@ export function UpdatesScreen() {
     chat: params.get("chat") ?? "",
     warning: params.get("warning") ?? "",
     sort: (params.get("sort") as Filters["sort"]) || "project",
+    tier: params.get("tier") ?? "",
   }), [params]);
   const filterKey = JSON.stringify(filters);
   const setFilter = useCallback((patch: Partial<Filters>) => {
@@ -406,6 +407,7 @@ export function UpdatesScreen() {
     <div className="page updates">
       <FilterBar filters={filters} query={query} onQuery={setQuery} counts={list?.counts} warningCounts={list?.warning_counts}
         sheets={list?.sheets ?? []} onChange={setFilter} searchRef={searchRef} filtersRef={filtersRef} onHelp={() => setHelp(true)}
+        tierCounts={list?.tier_counts} gate={list?.gate}
         chatName={chatName} />
       {(jobAdding || newCount > 0) && (
         <InfoBanner action={newCount > 0 ? (

@@ -40,10 +40,11 @@ def rows(cur):
 @router.post("/login")
 async def login(request: Request):
     data = await body_of(request)
-    if not web.password_ok(str(data.get("password", ""))):
+    role = web.password_ok(str(data.get("password", "")))
+    if not role:
         time.sleep(1)
         return err("bad_password", 401)
-    return web.set_session(JSONResponse({"ok": True}))
+    return web.set_session(JSONResponse({"ok": True, "role": role}), role)
 
 
 @router.post("/logout")
@@ -67,7 +68,7 @@ def busy(c):
 
 @router.get("/me")
 @router.get("/status")
-def me():
+def me(request: Request):
     with db.connect() as c:
         imp = master.current_import(c)
         open_jids = {r["chat_jid"] for r in c.execute(
@@ -79,7 +80,8 @@ def me():
             "chats_with_suggestions": len(open_jids),
         }
         last_sync = c.execute("SELECT MAX(finished_at) FROM jobs WHERE status='done'").fetchone()[0]
-        return {"market": MARKET, "has_master": imp is not None,
+        return {"market": MARKET, "has_master": imp is not None, "role": web.role_of(request) or "admin",
+                "gate": master.gate_on(c),
                 "master": {"file_name": imp["file_name"], "imported_at": imp["imported_at"]} if imp else None,
                 "job": running_job(c), "counts": counts, "last_job_finished_at": last_sync}
 
@@ -140,7 +142,18 @@ def item(p):
         "decided_by": p["decided_by"] if "decided_by" in p.keys() else None,
         "brain": ({"verdict": p["brain_verdict"], "confidence": p["brain_confidence"], "reason": p["brain_reason"],
                    "action": p["brain_action"]} if "brain_verdict" in p.keys() and p["brain_verdict"] else None),
+        **gate_info(p),
     }
+
+
+def gate_info(p):
+    """The accuracy gate's queue, approval chance and reasons for one suggestion."""
+    keys = p.keys()
+    g = json.loads(p["gate_json"] or "{}") if "gate_json" in keys and p["gate_json"] else {}
+    return {"tier": p["tier"] if "tier" in keys else None,
+            "p_approve": p["p_approve"] if "p_approve" in keys else None,
+            "gate_reasons": g.get("reasons", []), "gate_signals": g.get("contrib", []),
+            "group_developer": g.get("group_developer")}
 
 
 def state_counts(c):
@@ -162,7 +175,7 @@ def export_suggestions_csv():
 
 @router.get("/proposals")
 def list_proposals(state: str = "proposed", sheet: str = "", match: str = "", q: str = "", chat: str = "",
-                   warning: str = "", sort: str = "project", cursor: str = "0", limit: int = 200):
+                   warning: str = "", sort: str = "project", cursor: str = "0", limit: int = 200, tier: str = ""):
     """Filters: state, sheet, match (exact/alias/near/new), q (project/developer/sheet name), chat (jid),
     warning (comma list of codes; 'any' = has warnings). sort: project (default) / newest / warnings."""
     where, args = ["x.state=?"], [state if state in STATES else "proposed"]
@@ -178,6 +191,9 @@ def list_proposals(state: str = "proposed", sheet: str = "", match: str = "", q:
     if chat:
         where.append("x.chat_jid=?")
         args.append(chat)
+    if tier in ("ready", "check", "new", "hidden"):
+        where.append("x.tier=?")
+        args.append(tier)
     order = {"newest": "COALESCE(x.source_ts,0) DESC, x.id DESC"}.get(
         sort, "x.project_key, x.sheet, x.field, COALESCE(x.source_ts,0) DESC")
     with db.connect() as c:
@@ -185,6 +201,9 @@ def list_proposals(state: str = "proposed", sheet: str = "", match: str = "", q:
                                             f"ORDER BY {order}", args).fetchall()]
         counts = state_counts(c)
         has_master = master.current_import(c) is not None
+        tier_counts = {r[0] or "unsorted": r[1] for r in c.execute(
+            "SELECT tier, COUNT(*) FROM proposals WHERE state='proposed' GROUP BY tier")}
+        gate_enabled = master.gate_on(c)
     warning_counts = {code: sum(code in i["warning_codes"] for i in found) for code in master.WARNING_CODES}
     wanted = {w for w in warning.split(",") if w}
     if wanted == {"any"}:
@@ -197,15 +216,20 @@ def list_proposals(state: str = "proposed", sheet: str = "", match: str = "", q:
     limit = max(1, min(limit, 500))
     page = found[start:start + limit]
     return {"items": page, "total": len(found), "counts": counts, "warning_counts": warning_counts,
+            "tier_counts": tier_counts, "gate": gate_enabled,
             "next_cursor": str(start + limit) if start + limit < len(found) else None, "has_master": has_master,
             "sheets": list(ms.SHEETS)}
 
 
 # ---------- sheet view: the master as a grid, with approved changes and open suggestions overlaid ----------
 @router.get("/sheet")
-def sheet_view(sheet: str = "", view: str = "all", q: str = "", offset: int = 0, limit: int = 3000):
-    """view: all | changed (rows with an approved change or an open suggestion) | pending | approved."""
+def sheet_view(sheet: str = "", view: str = "all", q: str = "", offset: int = 0, limit: int = 3000,
+               checks: bool = True):
+    """view: all | changed (rows with an approved change or an open suggestion) | pending | approved |
+    review (rows with a Ready suggestion). With the accuracy gate on, Hidden suggestions are never shown and
+    `checks=false` shows only Ready ones."""
     with db.connect() as c:
+        gate_enabled = master.gate_on(c)
         imp = master.current_import(c)
         if not imp:
             return err("no_master", 409, "Upload the master workbook first")
@@ -232,6 +256,8 @@ def sheet_view(sheet: str = "", view: str = "all", q: str = "", offset: int = 0,
                 approved[(p["row_id"], p["field"])] = p  # latest wins
             for p in c.execute(q_sql + f"WHERE p.state='proposed' AND p.row_id IN ({marks}) "
                                        "ORDER BY COALESCE(p.source_ts,0), p.id", ids):
+                if gate_enabled and (p["tier"] == "hidden" or (not checks and p["tier"] != "ready")):
+                    continue
                 pending.setdefault((p["row_id"], p["field"]), []).append(p)
             names = {r["jid"]: r["name"] for r in c.execute("SELECT jid, name FROM groups")}
         else:
@@ -243,7 +269,8 @@ def sheet_view(sheet: str = "", view: str = "all", q: str = "", offset: int = 0,
                     "source_kind": p["source_kind"], "source_ts": p["source_ts"],
                     "chat_name": names.get(p["chat_jid"], p["chat_jid"] or ""), "chat_jid": p["chat_jid"],
                     "brain_reason": p["brain_reason"], "brain_verdict": p["brain_verdict"],
-                    "warning": p["warning"] or "", "count": count, "row_new": p["row_id"] is None}
+                    "warning": p["warning"] or "", "count": count, "row_new": p["row_id"] is None,
+                    **{k: v for k, v in gate_info(p).items() if k != "group_developer"}}
 
         feeds = {}  # project -> groups the team assigned to it (same developer)
         for f in c.execute("SELECT cp.project_key, cp.developer_key, g.name FROM chat_projects cp "
@@ -252,7 +279,7 @@ def sheet_view(sheet: str = "", view: str = "all", q: str = "", offset: int = 0,
         out_rows = []
         for r in all_rows:
             row = {"row_id": r["id"], "row_number": r["row_number"], "state": r["state"], "cells": {}, "changes": 0,
-                   "pending": 0, "groups": [n for dk, n in feeds.get(r["project_key"], [])
+                   "pending": 0, "ready": 0, "groups": [n for dk, n in feeds.get(r["project_key"], [])
                                             if not dk or master.same_developer(dk, r)]}
             for f, _ in cols:
                 master_raw = r[f] if f in ("developer", "project") else cells.get((r["id"], f), "")
@@ -264,6 +291,7 @@ def sheet_view(sheet: str = "", view: str = "all", q: str = "", offset: int = 0,
                 if pend:
                     cell["pending"] = change(pend[-1], "pending", len(pend))
                     row["pending"] += 1
+                    row["ready"] += pend[-1]["tier"] == "ready"
                 row["cells"][f] = cell
             if "date" in row["cells"] and row["changes"]:  # an approval writes today's date on the row (export rule)
                 day = master.approval_date(c, r["id"])
@@ -275,6 +303,8 @@ def sheet_view(sheet: str = "", view: str = "all", q: str = "", offset: int = 0,
         for p in c.execute(f"SELECT p.*, {CHAT_SQL} chat_jid, b.reason brain_reason, b.verdict brain_verdict "
                            "FROM proposals p LEFT JOIN brain_reviews b ON b.proposal_id=p.id "
                            "WHERE p.state='proposed' AND p.row_id IS NULL AND p.sheet=? ORDER BY p.id", (sheet,)):
+            if gate_enabled and (p["tier"] == "hidden" or not checks):
+                continue  # new projects are a separate (monthly) task when the gate is on
             nr = new_rows.setdefault(p["project_key"], {
                 "row_id": None, "row_number": None, "state": "suggested_new", "changes": 0, "pending": 0,
                 "cells": {f: {"master": ""} for f, _ in cols}})
@@ -287,6 +317,7 @@ def sheet_view(sheet: str = "", view: str = "all", q: str = "", offset: int = 0,
         out_rows += list(new_rows.values())
 
     counts = {"rows": len(out_rows), "changed": sum(1 for r in out_rows if r["changes"] or r["pending"]),
+              "ready_cells": sum(r.get("ready", 0) for r in out_rows),
               "approved_cells": sum(r["changes"] for r in out_rows), "pending_cells": sum(r["pending"] for r in out_rows),
               "suggested_new_rows": len(new_rows)}
     if view == "changed":
@@ -295,6 +326,8 @@ def sheet_view(sheet: str = "", view: str = "all", q: str = "", offset: int = 0,
         out_rows = [r for r in out_rows if r["pending"]]
     elif view == "approved":
         out_rows = [r for r in out_rows if r["changes"]]
+    elif view == "review":
+        out_rows = [r for r in out_rows if r.get("ready")]
     if q.strip():
         key = cp.normalize_project_key(q)
         out_rows = [r for r in out_rows if key in cp.normalize_project_key(
@@ -302,8 +335,107 @@ def sheet_view(sheet: str = "", view: str = "all", q: str = "", offset: int = 0,
     total = len(out_rows)
     limit = max(1, min(limit, 5000))
     return {"sheet": sheet, "sheets": [s for s in ms.SHEETS if s in sheets], "columns": columns, "counts": counts,
+            "gate": gate_enabled,
             "total": total, "offset": offset, "rows": out_rows[offset:offset + limit],
             "next_offset": offset + limit if offset + limit < total else None}
+
+
+@router.post("/sheet/approve")
+async def sheet_approve(request: Request):
+    """{row_id} approves every Ready suggestion on that sheet row; {developer, sheet} every Ready suggestion of that
+    developer on that sheet. Only Ready ones: anything in Check still needs its own look."""
+    d = await body_of(request)
+    with db.connect() as c:
+        if d.get("row_id"):
+            ids = [r[0] for r in c.execute("SELECT id FROM proposals WHERE state='proposed' AND tier='ready' "
+                                           "AND row_id=?", (int(d["row_id"]),))]
+        elif d.get("developer") and d.get("sheet"):
+            import names
+            ids = [r["id"] for r in c.execute(
+                "SELECT p.id, r.developer FROM proposals p JOIN master_rows r ON r.id=p.row_id WHERE p.state='proposed' "
+                "AND p.tier='ready' AND p.sheet=?", (d["sheet"],)) if names.same_company(r["developer"] or "",
+                                                                                           d["developer"])]
+        else:
+            return err("bad_request", 422, "Send row_id, or developer and sheet")
+    done, skipped = master.decide_detail(ids, "approve")
+    with db.connect() as c:
+        return {"approved": len(done), "skipped": len(skipped), "counts": state_counts(c)}
+
+
+# ---------- accuracy gate, catalog, learning (More > Brain, Master) ----------
+@router.get("/settings/gate")
+def gate_settings():
+    with db.connect() as c:
+        return {"enabled": master.gate_on(c), "tiers": {r[0] or "unsorted": r[1] for r in c.execute(
+            "SELECT tier, COUNT(*) FROM proposals WHERE state='proposed' GROUP BY tier")}}
+
+
+@router.put("/settings/gate")
+async def set_gate(request: Request):
+    """{enabled}: the accuracy gate. Turning it on re-matches the open suggestions with the developer lock (a job,
+    no Claude calls) and sorts them into queues."""
+    import gate
+    d = await body_of(request)
+    on = bool(d.get("enabled"))
+    with db.connect() as c:
+        gate.set_enabled(c, on)
+    job_id = None
+    if on:
+        import rematch
+        job_id = jobs.start("Re-match suggestions (accuracy gate on)", lambda log: rematch.run(log))
+    if not job_id:
+        gate.run()
+    return dict(gate_settings(), job_id=job_id)
+
+
+@router.get("/catalog")
+def catalog_info():
+    import catalog
+    with db.connect() as c:
+        return catalog.counts(c)
+
+
+@router.post("/catalog")
+async def catalog_upload(file: UploadFile = File(...)):
+    """companies.csv or projects.csv from the Byit app (detected from the header)."""
+    import catalog, gate
+    try:
+        out = catalog.import_csv(await file.read())
+    except ValueError as e:
+        return err("bad_file", 422, str(e))
+    with db.connect() as c:
+        out["counts"] = catalog.counts(c)
+    if not jobs.running():
+        gate.run()
+    return out
+
+
+def assignment_audit(c):
+    """Groups whose assigned developer looks doubtful: not an Egypt catalog company, a UAE-style group name, or the
+    group name points to another company. A person should confirm these."""
+    import catalog, names
+    cat = catalog.get(c)
+    out = []
+    for r in c.execute("SELECT p.jid, p.developer, g.name FROM chat_profiles p LEFT JOIN groups g ON g.jid=p.jid "
+                       "WHERE p.source='team' AND p.developer<>''"):
+        why = []
+        if names.uae_style_name(r["name"] or ""):
+            why.append("the group name follows the UAE pattern 'Byit App / X'")
+        if not cat.empty and not cat.is_company(r["developer"]) and not any(
+                names.same_company(r["developer"], d) for d in profiles.master_developers(c)):
+            why.append("the developer isn't in the Byit catalog or on the master")
+        named, s = cat.company(names.group_developer_text(r["name"] or "")) if not cat.empty else (None, 0)
+        if named and s >= 0.97 and not names.same_company(named, r["developer"]):
+            why.append(f"the group name points to {named}")
+        if why:
+            out.append({"jid": r["jid"], "group": r["name"] or r["jid"], "developer": r["developer"], "why": why})
+    return out
+
+
+@router.get("/brain/assignments")
+def brain_assignments():
+    with db.connect() as c:
+        return {"doubtful": assignment_audit(c)}
 
 
 # ---------- developer profile of a chat ----------
@@ -1295,7 +1427,7 @@ def source_row(row_id: int):
 
 
 # ---------- Phase 7: brain metrics panel (More > Brain) ----------
-FLAG_NAMES = ["MATCHER", "BRAIN_MATCHER", "MATCH_AUTO", "MATCH_NEAR", "MATCH_TIEBREAK_LOW", "BRAIN_AUTO_APPROVE",
+FLAG_NAMES = ["READY_P", "LESSONS_LLM", "APP_TEAM_PASSWORD", "MATCHER", "BRAIN_MATCHER", "MATCH_AUTO", "MATCH_NEAR", "MATCH_TIEBREAK_LOW", "BRAIN_AUTO_APPROVE",
               "BRAIN_AUTO_REJECT", "GUARDS_V2", "FEWSHOT", "FEWSHOT_K", "NOISE_SKIP", "TEMPLATES", "EXTRACTION_CACHE",
               "RETRAIN_MIN_LABELS", "CLAUDE_TIEBREAK_MODEL", "CLAUDE_BRAIN_MODEL", "CLAUDE_MODEL", "CLAUDE_FILE_MODEL"]
 
@@ -1303,7 +1435,9 @@ FLAG_NAMES = ["MATCHER", "BRAIN_MATCHER", "MATCH_AUTO", "MATCH_NEAR", "MATCH_TIE
 def flag_states():
     import brain, extraction_cache, matcher, memory, noise, proposals as _p, retrain, templates
     import llm as _llm
-    eff = {"MATCHER": master.MATCHER, "BRAIN_MATCHER": brain.BRAIN_MATCHER, "MATCH_AUTO": matcher.MATCH_AUTO,
+    import gate as _gate, lessons as _lessons
+    eff = {"READY_P": _gate.READY_P, "LESSONS_LLM": _lessons.LLM, "APP_TEAM_PASSWORD": bool(web.TEAM_PASSWORD),
+           "MATCHER": master.MATCHER, "BRAIN_MATCHER": brain.BRAIN_MATCHER, "MATCH_AUTO": matcher.MATCH_AUTO,
            "MATCH_NEAR": matcher.MATCH_NEAR, "MATCH_TIEBREAK_LOW": matcher.MATCH_TIEBREAK_LOW,
            "BRAIN_AUTO_APPROVE": brain.AUTO_APPROVE, "BRAIN_AUTO_REJECT": brain.AUTO_REJECT,
            "GUARDS_V2": brain.GUARDS_V2, "FEWSHOT": _p.FEWSHOT and brain.FEWSHOT, "FEWSHOT_K": memory.FEWSHOT_K,
@@ -1345,7 +1479,22 @@ def brain_metrics(refresh: bool = False):
                               "ORDER BY id DESC LIMIT 20"))
         shadow = rows(c.execute("SELECT * FROM matcher_shadow ORDER BY id DESC LIMIT 20"))
         meta = {r["key"]: r["value"] for r in c.execute("SELECT key, value FROM meta WHERE key LIKE 'retrain_%'")}
-        return {"models": {"matcher": _model_info("matcher"), "noise": _model_info("noise")},
+        import catalog, lessons as _lessons
+        tiers = {r[0] or "unsorted": r[1] for r in c.execute(
+            "SELECT tier, COUNT(*) FROM proposals WHERE state='proposed' GROUP BY tier")}
+        ready_decided = c.execute("SELECT state, COUNT(*) FROM proposals WHERE decided_by IS NULL AND decided_at IS NOT "
+                                  "NULL AND json_extract(gate_json,'$.flags') IS NOT NULL AND tier='ready' "
+                                  "GROUP BY state").fetchall()
+        rd = {r[0]: r[1] for r in ready_decided}
+        gate_block = {"enabled": master.gate_on(c), "tiers": tiers, "catalog": catalog.counts(c),
+                      "ready_approval_rate": round(rd.get("approved", 0) / max(1, rd.get("approved", 0) +
+                                                                                 rd.get("rejected", 0)), 4)
+                      if rd else None, "ready_decided": sum(rd.values()),
+                      "lessons": [{k: l[k] for k in ("text", "outcome", "support", "rate", "weight")}
+                                  for l in _lessons.load(c)[:15]],
+                      "doubtful_assignments": len(assignment_audit(c))}
+        return {"models": {"matcher": _model_info("matcher"), "noise": _model_info("noise"),
+                           "acceptance": _model_info("acceptance")}, "gate": gate_block,
                 "eval": ev, "llm": run_eval.llm_metrics(c), "cost_by_day": cost, "runs": runs,
                 "shadow": shadow, "labels": retrain.label_count(c), "retrain": meta,
                 "flags": flag_states(), "rule_suggestions": rule_suggestions.latest()}

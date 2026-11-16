@@ -83,6 +83,21 @@ def _noise(log):
     return ver, meta, ok, why
 
 
+def _acceptance(log):
+    """Approval model: promoted when its held-out precision at the Ready bar holds against the current model's."""
+    import acceptance
+    ver, meta = acceptance.train(log)
+    cur = models.current_version(acceptance.KIND)
+    old = models.meta(acceptance.KIND, cur) if cur else None
+    p_at = lambda m: ((m or {}).get("held_out") or {}).get("precision_at", {}).get("0.9", [None, 0])
+    new_p, n = p_at(meta)
+    old_p = p_at(old)[0] if old else None
+    ok, why = should_promote(new_p, old_p, n or 0)
+    if not old and new_p is None:  # first model, too few decisions for a time split: start from it anyway
+        ok, why = True, "first approval model (too few decisions to hold any back yet)"
+    return ver, meta, ok, why
+
+
 def run(log=lambda *_: None, force=False, reason="nightly"):
     """Retrain both models if due (or force). Returns {kind: {version, promoted, why}} or None when skipped."""
     if not _busy.acquire(blocking=False):
@@ -98,7 +113,7 @@ def run(log=lambda *_: None, force=False, reason="nightly"):
             log(f"Retrain: {n - last} new label(s) since the last run, waiting for {MIN_NEW}")
             return None
         out = {}
-        for kind, fn in (("matcher", _matcher), ("noise", _noise)):
+        for kind, fn in (("matcher", _matcher), ("noise", _noise), ("acceptance", _acceptance)):
             try:
                 ver, meta, ok, why = fn(log)
             except ValueError as e:
@@ -114,6 +129,12 @@ def run(log=lambda *_: None, force=False, reason="nightly"):
                 c.execute("INSERT INTO model_runs(ts,kind,version,promoted,reason,trigger,labels,meta_json) "
                           "VALUES(?,?,?,?,?,?,?,?)", (int(time.time()), kind, ver, int(ok), why, reason, n,
                                                       json.dumps(meta, default=str)))
+        try:  # what the decisions teach, then every open suggestion re-sorted with the new knowledge
+            import gate, lessons
+            lessons.mine(log)
+            gate.run(log)
+        except Exception as e:
+            log(f"Lessons / queues refresh failed: {e}")
         report = None
         try:
             from eval import run_eval

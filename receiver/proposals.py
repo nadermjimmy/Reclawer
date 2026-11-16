@@ -203,6 +203,11 @@ def text_units(c, jids=None, skip=None, batch=60, budget=None):
             ex = _examples(c, "message", [m["text"] for m in chunk], dev, jid)
             if ex:
                 body["past_decisions"] = ex
+            if master.gate_on(c):  # what the team's decisions taught about this group (user turn)
+                import lessons
+                tips = lessons.for_chat(c, jid, dev)
+                if tips:
+                    body["team_lessons"] = tips
             u = _unit(f"t{chunk[0]['wa_id']}"[:60], "text",
                       f"{names.get(jid, jid)}: messages {i + 1}-{i + len(chunk)}", llm.MODEL,
                       json.dumps(body, ensure_ascii=False),
@@ -417,6 +422,7 @@ def run_stage_live(log, stage, jids=None):
         for u in units:
             tried.update(u["keys"])
         w, f, stop = _run_live_units(log, stage, units)
+        _gate()
         written += w
         failed += f
         if stop:  # the API key was rejected: every other request would fail the same way
@@ -458,6 +464,15 @@ def _run_live_units(log, stage, units):
             _done(u["keys"])
             log(f"{u['label']}: {n} suggestion(s)")
     return written, failed, False
+
+
+def _gate(log=lambda *_: None):
+    """Sort the newly written suggestions into the accuracy gate's queues (never fails the read)."""
+    try:
+        import gate
+        gate.run(log, only_new=True)
+    except Exception as e:
+        log(f"Accuracy gate skipped: {e}")
 
 
 def _run_local(log, units):
@@ -610,6 +625,7 @@ def _collect(run):
             "SELECT changes()").fetchone()[0]
         _set_run(c, run["id"], totals_json=json.dumps(totals), batch_id=None, status="running")
     log(f"{dict(STAGES)[STAGES[run['stage']][0]]}: {written} suggestion(s) from this batch")
+    _gate(log)
 
 
 def poll(log=None):
