@@ -186,7 +186,7 @@ def _retarget(c, p, row):
         warn.append("Approving writes today's date and lifts Hold/Hide on Sheet 2")
     try:
         c.execute("UPDATE proposals SET row_id=?, sheet=?, old_raw=?, match_state=?, matched_label=?, warning=?, "
-                  "row_key=? WHERE id=?", (row["id"], sheet, old_raw, "exact" if same_name else "near", row["project"],
+                  "row_key=?, gated_at=NULL WHERE id=?", (row["id"], sheet, old_raw, "exact" if same_name else "near", row["project"],
                                            "; ".join(warn), master.row_key_of(row), p["id"]))
     except Exception:  # an identical suggestion already targets this row
         return None
@@ -334,6 +334,11 @@ def review(log, jids=None, redo=False):
                     _apply(d, allowed[d["proposal_id"]], totals, log)
     log(f"Brain: {totals['approved']} approved, {totals['rejected']} rejected, {totals['retargeted']} moved to an "
         f"existing row, {totals['kept']} left for you")
+    try:
+        import gate
+        gate.run(log, only_new=True)
+    except Exception as e:
+        log(f"Accuracy gate skipped: {e}")
     return totals
 
 

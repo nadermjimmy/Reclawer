@@ -142,6 +142,18 @@ CREATE TABLE IF NOT EXISTS model_runs(
     id INTEGER PRIMARY KEY, ts INTEGER, kind TEXT, version TEXT, promoted INTEGER, reason TEXT, trigger TEXT,
     labels INTEGER, meta_json TEXT);
 
+-- the Byit app catalog (companies.csv / projects.csv uploaded on the Master page)
+CREATE TABLE IF NOT EXISTS catalog_companies(
+    id INTEGER PRIMARY KEY, ext_id TEXT, english TEXT, arabic TEXT, type TEXT, imported_at INTEGER);
+CREATE TABLE IF NOT EXISTS catalog_projects(
+    id INTEGER PRIMARY KEY, ext_id TEXT, name TEXT, company TEXT, company_ext_id TEXT, extra_json TEXT,
+    imported_at INTEGER);
+-- learning: weighted lessons mined from decisions (lessons.py)
+CREATE TABLE IF NOT EXISTS lessons(
+    id INTEGER PRIMARY KEY, scope TEXT, scope_value TEXT, field TEXT, outcome TEXT, reason TEXT, support INTEGER,
+    hits INTEGER, rate REAL, weight REAL, text TEXT, examples_json TEXT, updated_at INTEGER,
+    UNIQUE(scope, scope_value, field, outcome, reason));
+
 CREATE TABLE IF NOT EXISTS jobs(
     id INTEGER PRIMARY KEY, name TEXT, status TEXT, started_at INTEGER, finished_at INTEGER, log TEXT);
 """
@@ -180,6 +192,8 @@ def init():
         _add_columns(c, "ingest_items", ["cache_json TEXT"])
         _add_columns(c, "source_messages", ["file_size INTEGER"])
         _add_columns(c, "source_files", ["pruned_at INTEGER"])
+        # accuracy gate: queue (ready / check / new / hidden), approval probability and the reasons behind both
+        _add_columns(c, "proposals", ["tier TEXT", "p_approve REAL", "gate_json TEXT", "gated_at INTEGER"])
         # developer-scoped aliases start from the global ones (developer_key '' = any developer, today's behaviour)
         c.execute("INSERT OR IGNORE INTO dev_aliases(alias_key,developer_key,project_key,label,confirmed_at) "
                   "SELECT alias_key, COALESCE(developer_key,''), project_key, label, confirmed_at FROM master_aliases")

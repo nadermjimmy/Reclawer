@@ -23,6 +23,7 @@ def import_workbook(data, file_name):
     now = int(time.time())
     summary = {"sheets": {}, "ignored_sheets": [], "unknown_headers": {}, "issues": 0, "legacy_duplicates": 0}
     with db.connect() as c:
+        open_ids = [r[0] for r in c.execute("SELECT id FROM proposals WHERE state='proposed'")]
         stamp_row_keys(c)  # labels keep a stable row identity before the old rows go
         for t in ("master_cells", "master_rows", "master_sheets", "master_issues"):
             c.execute(f"DELETE FROM {t}")
@@ -67,6 +68,11 @@ def import_workbook(data, file_name):
         summary["relinked"] = relink(c)  # human labels and brain reviews point at the new rows again
         c.execute("UPDATE master_imports SET summary_json=? WHERE id=?", (json.dumps(summary), imp))
         c.execute("INSERT OR REPLACE INTO meta VALUES('retrain_pending','1')")  # retrain.tick picks it up
+    if open_ids:  # the open suggestions now point at the new rows instead of being thrown away
+        import rematch
+        summary["rematched"] = rematch.run(ids=open_ids)
+        with db.connect() as c:
+            c.execute("UPDATE master_imports SET summary_json=? WHERE id=?", (json.dumps(summary), imp))
     return summary
 
 
@@ -340,32 +346,79 @@ def _filled_by_better(c, row, sheet, key, field, kind):
                      args + better + [since]).fetchone() is not None
 
 
-def add_proposal(c, item):
-    """item: developer, project, location_code, field, value, quote, source_kind, source_ref, source_ts.
-    Writes one proposal per matched sheet row (or one 'new project' proposal). Returns how many were written.
-    Files (rows, PDF pages, images) only fill gaps: see SOURCE_RANK."""
+def gate_on(c):
+    """The accuracy gate switch (More > Brain): developer lock + Ready/Check/New/Hidden queues."""
+    r = c.execute("SELECT value FROM meta WHERE key='accuracy_gate'").fetchone()
+    return bool(r and r[0] == "1")
+
+
+def lock_developer(c, item):
+    """Developer a suggestion must stay with, or None. The group's developer (team assignment, else the catalog),
+    unless the message itself names another known developer (then that one)."""
+    import catalog, names
+    group_dev, _ = catalog.group_developer(c, item.get("chat_jid"))
+    stated = (item.get("developer") or "").strip()
+    if stated and (not group_dev or not names.same_company(stated, group_dev)):
+        cat = catalog.get(c)
+        known = cat.is_company(stated) or any(names.same_company(stated, d) for d in profiles.master_developers(c))
+        if known:
+            return stated
+    return group_dev or None
+
+
+def own_row(c, project, developer, sheet):
+    """Best row of `developer` on `sheet` for a project name (one name inside the other allowed: same developer):
+    (row, state, label) or None."""
+    import names
+    best = None
+    for r in c.execute(f"SELECT * FROM master_rows WHERE state IN ({','.join('?' * len(USABLE))})", USABLE):
+        if home_sheet(r) != sheet or not names.same_company(r["developer"] or "", developer):
+            continue
+        s = names.sim(project, r["project"] or "", extra=names.developer_words(developer, r["developer"]),
+                      subset_ok=True)
+        if s >= 0.9 and (best is None or s > best[0]):
+            best = (s, r)
+    if not best:
+        return None
+    exact = cp.normalize_project_key(project) == best[1]["project_key"]
+    return best[1], "exact" if exact else "near", best[1]["project"]
+
+
+def plan_targets(c, item):
+    """What add_proposal would write for item: [(sheet, row, state, label, old_raw, warnings)], plus (parsed, new_raw,
+    project, key, loc, developer). Empty list = nothing to suggest."""
     field = item["field"]
     if field not in ms.ALL_PROPOSABLE or field in ms.NEVER or not item.get("project", "").strip():
-        return 0
+        return [], None
     parsed = ms.round_prices(field, ms.parse(field, item["value"]))  # the team's rounding rule
     if not parsed.get("raw"):
-        return 0
+        return [], None
     new_raw = ms.fmt(field, parsed) if parsed.get("ok") else parsed["raw"]
     project, key = item["project"].strip(), cp.normalize_project_key(item["project"])
     loc = (item.get("location_code") or "").strip().lower()
+    developer = (item.get("developer") or "").strip()
     sheets = _sheets_for(field)
     assigned = profiles.assigned_keys(c, item.get("chat_jid"))
-    hits = match(c, project, item.get("developer", ""), sheets, assigned, chat_jid=item.get("chat_jid"), field=field,
+    hits = match(c, project, developer, sheets, assigned, chat_jid=item.get("chat_jid"), field=field,
                  source_kind=item["source_kind"], location=loc)
-    written = 0
-    targets = []
-    for sheet, (row, state, label) in hits.items():
-        targets.append((sheet, row, state, label))
+    if gate_on(c):  # developer lock: never another developer's row
+        import names
+        lock = lock_developer(c, item)
+        if lock:
+            hits = {s: h for s, h in hits.items() if names.same_company(h[0]["developer"] or "", lock)}
+            for s in sheets:
+                if s not in hits:
+                    hit = own_row(c, project, lock, s)
+                    if hit:
+                        hits[s] = hit
+            developer = developer or lock
+    targets = [(sheet, row, state, label) for sheet, (row, state, label) in hits.items()]
     grid_sheets = [s for s in sheets if ms.sheet_kind(s) == ms.GRID]
     if grid_sheets and not any(ms.sheet_kind(t[0]) == ms.GRID for t in targets):
         targets.append((ms.sheet_for_location(loc) or "", None, "new", ""))  # new project on a price grid
     if "Sheet 2" in sheets and "Sheet 2" not in hits and not grid_sheets:
         targets.append(("Sheet 2", None, "new", ""))  # commission / feedback for a project not on Sheet 2
+    out = []
     for sheet, row, state, label in targets:
         if _filled_by_better(c, row, sheet, key, field, item["source_kind"]):
             continue  # an earlier source in the reading order already holds a recent value for this cell
@@ -391,15 +444,29 @@ def add_proposal(c, item):
             warn.append("New project with no known location: choose the sheet when approving")
         if not parsed.get("ok"):
             warn.append("Value doesn't follow the sheet format; check before approving")
-        rkey = row_key_of(row) if row is not None else normalize.row_key(item.get("developer", ""), project, sheet)
+        out.append((sheet, row, state, label, old_raw, warn))
+    return out, (parsed, new_raw, project, key, loc, developer)
+
+
+def add_proposal(c, item):
+    """item: developer, project, location_code, field, value, quote, source_kind, source_ref, source_ts.
+    Writes one proposal per matched sheet row (or one 'new project' proposal). Returns how many were written.
+    Files (rows, PDF pages, images) only fill gaps: see SOURCE_RANK."""
+    targets, info = plan_targets(c, item)
+    if not targets:
+        return 0
+    parsed, new_raw, project, key, loc, developer = info
+    written = 0
+    for sheet, row, state, label, old_raw, warn in targets:
+        rkey = row_key_of(row) if row is not None else normalize.row_key(developer, project, sheet)
         cur = c.execute("INSERT OR IGNORE INTO proposals(row_id,sheet,developer,project,project_key,field,old_raw,"
                         "new_raw,new_parsed_json,quote,source_kind,source_ref,source_ts,match_state,matched_label,"
                         "location_code,warning,created_at,row_key,first_row_key,first_match_state) "
                         "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                        (row["id"] if row is not None else None, sheet, item.get("developer", "").strip(), project,
-                         key, field, old_raw, new_raw, json.dumps(parsed, ensure_ascii=False), item.get("quote", ""),
-                         item["source_kind"], item["source_ref"], item.get("source_ts"), state, label, loc,
-                         "; ".join(warn), int(time.time()), rkey, rkey, state))
+                        (row["id"] if row is not None else None, sheet, developer, project,
+                         key, item["field"], old_raw, new_raw, json.dumps(parsed, ensure_ascii=False),
+                         item.get("quote", ""), item["source_kind"], item["source_ref"], item.get("source_ts"), state,
+                         label, loc, "; ".join(warn), int(time.time()), rkey, rkey, state))
         if cur.rowcount:
             written += 1
             _supersede(c, cur.lastrowid)
