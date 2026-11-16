@@ -167,7 +167,12 @@ def evaluate(c, p, ctx, row=None):
         elif (orig_old(p) or "").strip() != (cur_raw or "").strip() and (p["source_ts"] or 0) < ctx.imported_at:
             flags.append("old_value_changed")  # the team's sheet changed this cell after the message was sent
         if p["match_state"] == "near":
-            flags.append("near_name")
+            # same distinctive words both ways, on the group's own developer's row ('Amara Residence' / 'Amara'):
+            # as good as exact. One name only partly inside the other ('Viva Al Galala' / 'Viva Coast') is not.
+            strong = bool(gdev) and names.same_company(row["developer"] or "", gdev) and names.sim(
+                p["project"], row["project"] or "", extra=names.developer_words(gdev, row["developer"])) >= 0.97
+            if not strong:
+                flags.append("near_name")
     else:
         if not p["sheet"]:
             flags.append("needs_sheet")
@@ -214,7 +219,7 @@ def evaluate(c, p, ctx, row=None):
         tier = "hidden"
     elif p["row_id"] is None and "exists_on_sheet" not in fl:
         tier = "new"
-    elif fl & CHECK or p["match_state"] not in ("exact", "alias"):
+    elif fl & CHECK or (p["match_state"] not in ("exact", "alias") and "near_name" in fl) or p["row_id"] is None:
         tier = "check"
     else:
         tier = "ready"

@@ -39,7 +39,14 @@ const LEGACY: [string, (p: Record<string, string | undefined>, q: URLSearchParam
 
 function NotFound() {
   const loc = useLocation();
-  return <Navigate to="/chats" replace state={{ from: loc.pathname }} />;
+  const { me } = useSession();
+  return <Navigate to={me?.role === "team" ? "/sheet" : "/chats"} replace state={{ from: loc.pathname }} />;
+}
+
+/** The app opens on Chats; the team login opens on its sheet. */
+function Home() {
+  const { me } = useSession();
+  return <Navigate to={me?.role === "team" ? "/sheet" : "/chats"} replace />;
 }
 
 function Gate() {
@@ -56,7 +63,7 @@ function Gate() {
     <JobsProvider>
       <Routes>
         <Route element={<Shell />}>
-          <Route index element={<Navigate to="/chats" replace />} />
+          <Route index element={<Home />} />
           <Route path="updates" element={<UpdatesScreen />} />
           <Route path="sheet" element={<SheetScreen />} />
           <Route path="chats" element={<ChatsScreen />} />

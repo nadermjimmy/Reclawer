@@ -1,9 +1,10 @@
 import { RefreshCw } from "lucide-react";
 import { useState } from "react";
 import { errorText } from "../../api/client";
-import { getMetrics, type BrainMetrics, type KindMetrics, type ModelInfo } from "../../api/brain";
+import { getAssignmentAudit, getMetrics, setGate, type BrainMetrics, type GateBlock, type KindMetrics, type ModelInfo } from "../../api/brain";
+import { useSession } from "../../app/session";
 import { usePageTitle } from "../../app/title";
-import { Button, Card, ErrorBanner, Pill, SkeletonRows, Stat, Table, useToast } from "../../components";
+import { Button, Card, ConfirmDialog, ErrorBanner, Pill, SkeletonRows, Stat, Table, useToast } from "../../components";
 import { fmtDateTime, fmtNumber } from "../../lib/format";
 import { useLoad } from "../../lib/hooks";
 import "./brain.css";
@@ -36,6 +37,102 @@ function ModelCard({ title, info, metaKeys }: { title: string; info: ModelInfo; 
       ) : (
         <p className="small muted">Uses its built-in rules until enough person decisions exist to train it (Pipeline: Retrain).</p>
       )}
+    </Card>
+  );
+}
+
+const TIER_LABEL: Record<string, string> = { ready: "Ready", check: "Check", new: "New projects", hidden: "Hidden",
+  unsorted: "Not sorted yet" };
+
+function GateCard({ g, onChanged }: { g: GateBlock; onChanged: () => void }) {
+  const toast = useToast();
+  const { refresh } = useSession();
+  const [confirm, setConfirm] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const toggle = async () => {
+    setBusy(true);
+    try {
+      const r = await setGate(!g.enabled);
+      toast.show({ tone: "success", message: r.enabled
+        ? (r.job_id ? "Accuracy gate on. Re-matching the open suggestions now (see Pipeline)." : "Accuracy gate on.")
+        : "Accuracy gate off: the team sees every suggestion again." });
+      setConfirm(false);
+      await refresh();
+      onChanged();
+    } catch (e) {
+      toast.show({ tone: "error", message: errorText(e) });
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Card title="Accuracy Gate" eyebrow="What the team sees"
+      actions={<Button variant={g.enabled ? "secondary" : "primary"} size="sm" disabled={busy} onClick={() => setConfirm(true)}>
+        {g.enabled ? "Turn Off" : "Turn On"}</Button>}>
+      <p className="small muted brain-note">
+        {g.enabled ? "On. " : "Off: the team sees every suggestion. "}
+        With it on, a group's suggestions stay with its own developer, the Sheet opens on Ready suggestions only, and UAE,
+        wrong-developer and already-applied ones are hidden. The queues below are always computed so you can compare first.
+      </p>
+      <div className="stats">
+        {["ready", "check", "new", "hidden", "unsorted"].filter((k) => g.tiers[k]).map((k) => (
+          <Stat key={k} value={fmtNumber(g.tiers[k])} label={TIER_LABEL[k]} />
+        ))}
+        <Stat value={g.ready_approval_rate == null ? "–" : pct(g.ready_approval_rate)} label={`Ready approved (${fmtNumber(g.ready_decided)} decided)`} />
+        <Stat value={`${fmtNumber(g.catalog.companies)} / ${fmtNumber(g.catalog.projects)}`} label="Catalog developers / projects" />
+      </div>
+      {g.catalog.companies === 0 && <p className="small">Upload the Byit companies and projects CSVs on the Master page first.</p>}
+      <ConfirmDialog open={confirm} title={g.enabled ? "Turn the accuracy gate off?" : "Turn the accuracy gate on?"}
+        confirmLabel={g.enabled ? "Turn Off" : "Turn On"} busy={busy} onCancel={() => setConfirm(false)} onConfirm={() => void toggle()}>
+        <p className="small">{g.enabled ? "The team will see every suggestion again, and matching goes back to the old rules."
+          : "The open suggestions are re-matched with the developer lock (a few minutes, no Claude cost), then sorted. The team's Sheet opens on Ready."}</p>
+      </ConfirmDialog>
+    </Card>
+  );
+}
+
+function LearningCard({ g, model }: { g: GateBlock; model: ModelInfo }) {
+  const meta = (model.meta ?? {}) as { model?: string; labels?: number; approved?: number; trained_at?: number;
+    held_out?: { n: number; ready_threshold_99?: number | null; precision_at?: Record<string, [number | null, number]> } | null };
+  return (
+    <Card title="What the Brain Learned" eyebrow="Approval model and lessons">
+      <p className="small muted brain-note">
+        The approval model weighs about 45 signals per suggestion (match, developer, catalog, price, source, age, the
+        history of the group, developer and column) and is retrained nightly from the team's decisions. Lessons are
+        patterns in those decisions, weighted by how strong the evidence is.
+      </p>
+      {model.current ? (
+        <p className="small">Model <span className="mono">{model.current}</span>: {meta.model}, trained on {fmtNumber(meta.labels ?? 0)} decisions
+          ({fmtNumber(meta.approved ?? 0)} approved){meta.trained_at ? `, ${fmtDateTime(meta.trained_at)}` : ""}.
+          {meta.held_out?.ready_threshold_99 != null && <> 99% of held-back suggestions above {pct(meta.held_out.ready_threshold_99)} were approved.</>}</p>
+      ) : (
+        <p className="small">No approval model yet: it starts once the team has made about 30 decisions (at least 5 approvals and 5
+          rejections). Until then the Ready queue is decided by the rules alone.</p>
+      )}
+      {g.lessons.length ? (
+        <ul className="brain-list small">
+          {g.lessons.map((l, i) => (
+            <li key={i}><Pill tone={l.outcome === "rejected" ? "negative" : "positive"}>{l.outcome === "rejected" ? "Watch" : "Reliable"}</Pill>{" "}
+              <span dir="auto">{l.text}</span> <span className="muted">(weight {l.weight.toFixed(2)})</span></li>
+          ))}
+        </ul>
+      ) : <p className="small muted">No lessons yet: they need at least 5 decisions with the same pattern.</p>}
+    </Card>
+  );
+}
+
+function AssignmentAudit({ n }: { n: number }) {
+  const data = useLoad(getAssignmentAudit, [n]);
+  const list = data.data?.doubtful ?? [];
+  return (
+    <Card title="Group Assignments to Check" eyebrow={`${fmtNumber(list.length)} doubtful`}>
+      {list.length ? (
+        <Table label="Doubtful assignments" head={["Group", "Assigned developer", "Why"]} dense>
+          {list.map((a) => (
+            <tr key={a.jid}><td dir="auto">{a.group}</td><td dir="auto">{a.developer}</td><td className="small">{a.why.join("; ")}</td></tr>
+          ))}
+        </Table>
+      ) : <p className="small muted">Every assigned group matches the catalog and its name.</p>}
     </Card>
   );
 }
@@ -80,6 +177,10 @@ export function BrainScreen() {
             <Stat value={fmtNumber(d.llm.placed_by_matcher)} label="Placed by the matcher" />
             <Stat value={`$${d.llm.usd_last_days.toFixed(2)}`} label="API cost, last 7 days" />
           </div>
+
+          <GateCard g={d.gate} onChanged={() => void data.reload()} />
+          <LearningCard g={d.gate} model={d.models.acceptance} />
+          {d.gate.doubtful_assignments > 0 && <AssignmentAudit n={d.gate.doubtful_assignments} />}
 
           <Card title="Eval per source kind" eyebrow={ev ? `Gold: ${fmtNumber(ev.gold.total)} decisions · ${fmtDateTime(ev.generated_at)}` : "Not run yet"}
             actions={<Button size="sm" icon={<RefreshCw size={14} />} disabled={busy} onClick={() => void refresh()}>

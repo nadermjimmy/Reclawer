@@ -22,8 +22,12 @@ export interface Me {
   job: RunningJob | null;
   counts: ShellCounts;
   last_job_finished_at: number | null;
+  /** 'team' logins (APP_TEAM_PASSWORD) see the simple app: Sheet and Chats. */
+  role: "admin" | "team";
+  /** The accuracy gate (More > Brain): Ready / Check / New / Hidden queues and the developer lock. */
+  gate: boolean;
 }
 
 export const getMe = () => get<Me>("/me");
-export const login = (password: string) => post<{ ok: true }>("/login", { password });
+export const login = (password: string) => post<{ ok: true; role: "admin" | "team" }>("/login", { password });
 export const logout = () => post<{ ok: true }>("/logout");

@@ -1,4 +1,6 @@
-import { get } from "./client";
+import { get, post } from "./client";
+
+export type Tier = "ready" | "check" | "new" | "hidden";
 
 export interface SheetChange {
   kind: "approved" | "pending";
@@ -17,6 +19,11 @@ export interface SheetChange {
   warning: string;
   count: number;
   row_new: boolean;
+  /** Accuracy gate: which queue, the learned approval chance (0-1, once a model exists) and why. */
+  tier?: Tier | null;
+  p_approve?: number | null;
+  gate_reasons?: string[];
+  gate_signals?: [string, number][];
 }
 
 export interface SheetCell {
@@ -46,21 +53,29 @@ export interface SheetRow {
   cells: Record<string, SheetCell>;
   changes: number;
   pending: number;
+  /** Ready suggestions on this row (accuracy gate). */
+  ready?: number;
 }
 
 export interface SheetData {
   sheet: string;
   sheets: string[];
   columns: SheetColumn[];
-  counts: { rows: number; changed: number; approved_cells: number; pending_cells: number; suggested_new_rows: number };
+  counts: { rows: number; changed: number; approved_cells: number; pending_cells: number; suggested_new_rows: number;
+    ready_cells?: number };
+  gate?: boolean;
   total: number;
   offset: number;
   rows: SheetRow[];
   next_offset: number | null;
 }
 
-export type SheetView = "all" | "changed" | "pending" | "approved";
+export type SheetView = "review" | "all" | "changed" | "pending" | "approved";
 
 /** The whole sheet in one response (the server caps a page at 3000 rows; the biggest tab is ~1,300). */
 export const getSheet = (sheet: string, view: SheetView, q: string, offset = 0) =>
-  get<SheetData>("/sheet", { sheet, view, q, offset, limit: 3000 });
+  get<SheetData>("/sheet", { sheet, view, q, offset, limit: 3000, checks: view === "review" ? false : undefined });
+
+/** Approve every Ready suggestion on a row, or of a developer on a sheet (Check ones still need their own look). */
+export const approveReady = (body: { row_id: number } | { developer: string; sheet: string }) =>
+  post<{ approved: number; skipped: number }>("/sheet/approve", body);

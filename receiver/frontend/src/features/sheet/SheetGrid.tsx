@@ -21,11 +21,14 @@ interface GridProps {
   onOpen: (p: Pos) => void;
   onFind: () => void;
   onCopy: (p: Pos) => void;
+  /** Review mode: Ready cells show the suggested value (the sheet's value is in the tooltip and formula bar). */
+  showSuggested?: boolean;
 }
 
 /** A Google-Sheets-like read-only grid: column letters, the header row as row 1, real row numbers, frozen
  * Developer + Project, a selection cursor and keyboard navigation. Rows are virtualized (fixed row height). */
-export function SheetGrid({ rows, cols, widths, shown, phone, sel, label, resetKey, gridRef, onSelect, onOpen, onFind, onCopy }: GridProps) {
+export function SheetGrid({ rows, cols, widths, shown, phone, sel, label, resetKey, gridRef, onSelect, onOpen, onFind, onCopy,
+  showSuggested = false }: GridProps) {
   const rnW = phone ? 40 : 46;
   const [win, setWin] = useState({ top: 0, h: 800, w: 1200 });
   const R = rows.length;
@@ -194,7 +197,8 @@ export function SheetGrid({ rows, cols, widths, shown, phone, sel, label, resetK
           <div className="sg-window" style={{ top: start * ROW_H }}>
             {visible.map((row, i) => (
               <GridRow key={row.row_id ?? `new-${start + i}`} row={row} r={start + i} cols={cols} dateCols={dateCols}
-                lefts={layout.lefts} last={layout.last} shown={shown} selC={sel.r === start + i ? sel.c : -1} fill={layout.fill.length} />
+                lefts={layout.lefts} last={layout.last} shown={shown} selC={sel.r === start + i ? sel.c : -1} fill={layout.fill.length}
+                showSuggested={showSuggested} />
             ))}
           </div>
           <div className="sg-window sg-fill" style={{ top: R * ROW_H }} aria-hidden="true">
@@ -215,7 +219,7 @@ export function SheetGrid({ rows, cols, widths, shown, phone, sel, label, resetK
   );
 }
 
-const GridRow = memo(function GridRow({ row, r, cols, dateCols, lefts, last, shown, selC, fill }: {
+const GridRow = memo(function GridRow({ row, r, cols, dateCols, lefts, last, shown, selC, fill, showSuggested }: {
   row: SheetRow;
   r: number;
   cols: SheetColumn[];
@@ -225,6 +229,7 @@ const GridRow = memo(function GridRow({ row, r, cols, dateCols, lefts, last, sho
   shown: Shown;
   selC: number;
   fill: number;
+  showSuggested: boolean;
 }) {
   const note = STATE_NOTE[row.state];
   const rowCls = row.state === "suggested_new" ? " is-newrow" : row.state === "moved" || row.state === "legacy_duplicate" ? " is-muted" : "";
@@ -237,16 +242,19 @@ const GridRow = memo(function GridRow({ row, r, cols, dateCols, lefts, last, sho
       {cols.map((col, c) => {
         const cell = cellOf(row, col.field);
         const dateCol = dateCols[c];
-        const text = displayValue(cell, shown, dateCol);
+        const suggestedHere = showSuggested && cell.pending?.tier === "ready";
+        const text = suggestedHere ? cell.pending!.new_raw : displayValue(cell, shown, dateCol);
         const approved = shown === "current" && (cell.approved || (dateCol && cell.current));
         let cls = "sg-cell";
         if (approved) cls += cell.approved?.decided_by === "brain" ? " is-brain" : " is-approved";
-        if (cell.pending) cls += " is-pending";
+        if (cell.pending) cls += cell.pending.tier === "ready" ? " is-ready" : " is-pending";
         if (dateCol) cls += " is-date";
         if (c === last) cls += " is-frozen-edge";
         if (lefts[c] != null) cls += " is-frozen";
         if (c === selC) cls += " is-sel";
-        const tip = cell.pending
+        if (suggestedHere) cls += " is-sugg-shown";
+        const tip = suggestedHere ? `Sheet now: ${cell.master || "empty"}. Suggested: ${cell.pending!.new_raw}`
+          : cell.pending
           ? `Suggested: ${cell.pending.new_raw}${cell.pending.count > 1 ? ` (newest of ${cell.pending.count})` : ""}`
           : approved && cell.approved ? `Was: ${cell.approved.old_raw || "empty"}` : undefined;
         return (
